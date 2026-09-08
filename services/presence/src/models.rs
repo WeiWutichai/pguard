@@ -40,8 +40,15 @@ pub struct ReplayQuery {
 // ----- REST response DTOs -----
 
 /// A guard's current position + liveness, returned by `/locations` (bulk) and
-/// `/guards/{id}/location`. `is_live` is computed (not stored): the 5-minute discovery
-/// freshness rule applied to `is_online` + `recorded_at` at read time.
+/// `/guards/{id}/location`. Neither flag is a raw column read:
+///   * `is_online` = the stored flag AND session liveness ([`crate::domain::is_session_live`]).
+///     `set_offline` only ever runs inside the WS task, so a presence crash/redeploy strands the
+///     stored flag at `true`; ANDing the liveness window keeps the admin map from reporting those
+///     ghosts as connected.
+///   * `is_live` = the 5-minute GPS freshness rule on `is_online` + `recorded_at` (green dot).
+///   * `available_for_work` = the guard's declared "พร้อมรับงาน" toggle (0005). Distinct from
+///     `is_online`: a guard streaming GPS for an active job is connected but NOT accepting new
+///     work, and only this flag puts them in front of customers.
 #[derive(Debug, Serialize)]
 pub struct GuardLocation {
     pub guard_id: Uuid,
@@ -53,6 +60,7 @@ pub struct GuardLocation {
     pub recorded_at: DateTime<Utc>,
     pub is_online: bool,
     pub is_live: bool,
+    pub available_for_work: bool,
 }
 
 /// One point of a guard's GPS history (from the append-only `location_history`).
@@ -118,6 +126,11 @@ pub struct OnlineGuard {
 
 /// A `presence.guard_locations` row. `is_live` is NOT a column — the handler computes it via
 /// [`crate::domain::is_live`] and assembles [`GuardLocation`].
+///
+/// `last_seen_at` (0005) is when the server last heard ANY frame from the owning session — a fix,
+/// a keep-alive, or a Pong — as opposed to `recorded_at`, which only a real GPS fix advances. The
+/// two must not be conflated: session liveness is what expires a dead row, GPS freshness is what
+/// dims the green dot. `Option` because rows predating 0005 have none (treated as not live).
 #[derive(Debug, sqlx::FromRow)]
 pub struct GuardLocationRow {
     pub guard_id: Uuid,
@@ -128,6 +141,8 @@ pub struct GuardLocationRow {
     pub speed: Option<f32>,
     pub recorded_at: DateTime<Utc>,
     pub is_online: bool,
+    pub available_for_work: bool,
+    pub last_seen_at: Option<DateTime<Utc>>,
 }
 
 /// A `presence.location_history` row projection (history reads select these columns).

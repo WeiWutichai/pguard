@@ -1,5 +1,13 @@
 //! GPS-over-WebSocket ingress (`GET /ws/track`) — the core of the presence slice.
 //!
+//! It also carries the guard's **"พร้อมรับงาน" availability declaration**
+//! (`{"type":"availability","available":bool}`), which is what makes them offerable to customers.
+//! Availability rides on the SOCKET rather than a REST flag on purpose: intent must not outlive
+//! the connection that declared it, or a killed app would leave a durable "available" behind for
+//! the next session — one the app also opens merely to track an active job — to inherit. That
+//! inheritance, in its original form (offerability keyed on "a GPS fix arrived"), is exactly the
+//! defect this frame removes: streaming GPS for a job is not consent to be offered new work.
+//!
 //! Auth mirrors `/ws/call`: **Bearer in the `Authorization` header on upgrade** (the `AuthUser`
 //! extractor runs before the upgrade; a token only in the URL query is NEVER read → 401). On
 //! top of that, presence applies a **role gate before the upgrade**: only a `guard` may stream
@@ -166,6 +174,17 @@ async fn session(
     // Ping-pong reaper state.
     let mut last_activity = Instant::now();
     let mut ping_sent_at: Option<Instant> = None;
+    // The guard's DECLARED "พร้อมรับงาน" intent for THIS session. Starts FALSE and only an
+    // explicit `{"type":"availability","available":true}` frame turns it on: opening a GPS socket
+    // must never, by itself, offer the guard to customers — that was the bug (the app also opens
+    // this socket to track an active job, with the toggle off). Session-scoped by construction, so
+    // a killed app leaves no durable "available" for the next session to inherit.
+    let mut available = false;
+    // Throttle clock for the `last_seen_at` session-liveness touch (see `touch_seen_if_due`).
+    // Seeded "one interval ago" like the rate clocks so the FIRST inbound frame stamps liveness.
+    let mut last_seen_write = seed
+        .checked_sub(domain::SEEN_TOUCH_INTERVAL)
+        .unwrap_or(seed);
     // Inbound frame-flood backstop (v1 audit risk #13): count ALL inbound frames in a rolling 1s
     // window and close as abusive past the ceiling. The per-second GPS gate + heartbeat gate run
     // AFTER parse, so they do not bound a flood of junk/parse-fail frames.
@@ -216,6 +235,18 @@ async fn session(
                     tracing::warn!(guard = %guard_id, "gps ws inbound frame flood; closing as abusive");
                     break;
                 }
+                // SESSION liveness: a fix, a keep-alive, or a bare Pong all prove the socket is
+                // still driven, so stamp `last_seen_at` (throttled). One place, every liveness
+                // frame type — which is the point: the discovery offerable set expires on this
+                // column, so a row whose service died stops being offered even though
+                // `set_offline` (WS-task-only) never ran for it.
+                //
+                // Binary is excluded on the same grounds the reaper excludes it below: presence
+                // speaks JSON text, so a client emitting only binary is not a working client and
+                // must not be able to hold its row alive.
+                if !matches!(msg, Message::Binary(_)) {
+                    touch_seen_if_due(&db, guard_id, session, &mut last_seen_write).await;
+                }
                 match msg {
                     Message::Text(text) => {
                         last_activity = Instant::now();
@@ -229,6 +260,7 @@ async fn session(
                             text.as_str(),
                             &mut last_gps,
                             &mut last_heartbeat,
+                            &mut available,
                         )
                         .await;
                     }
@@ -287,9 +319,33 @@ async fn session(
     tracing::info!(guard = %guard_id, "gps ws session closed");
 }
 
-/// Handle one inbound text frame: classify, then either run the heartbeat keep-alive (rate-
-/// limited, NO DB) or the GPS pipeline (rate-limited, validate+sanitize, persist + publish,
-/// ack). The heartbeat is gated on its OWN clock so it can never consume the GPS 1/sec slot.
+/// Stamp SESSION liveness (`last_seen_at`) for this connection, at most once per
+/// [`domain::SEEN_TOUCH_INTERVAL`]. Throttled because the discovery liveness window is minutes
+/// wide while frames arrive by the second — one single-row UPDATE per live guard per 30s is
+/// plenty to keep the row alive, and bounds the write amplification of the whole scheme.
+///
+/// Best-effort: a failed touch is logged, never fatal. Worst case the row ages out of the
+/// offerable set and the next successful touch (or fix) restores it — the fail-safe direction.
+async fn touch_seen_if_due(
+    db: &sqlx::PgPool,
+    guard_id: Uuid,
+    session: Uuid,
+    last_seen_write: &mut Instant,
+) {
+    if !domain::seen_touch_due(last_seen_write.elapsed()) {
+        return;
+    }
+    *last_seen_write = Instant::now();
+    if let Err(e) = repo::touch_seen(db, guard_id, session).await {
+        tracing::warn!(guard = %guard_id, "failed to stamp gps ws session liveness: {e}");
+    }
+}
+
+/// Handle one inbound text frame: classify, then run the keep-alive (rate-limited, NO DB), the
+/// availability declaration, or the GPS pipeline (rate-limited, validate+sanitize, persist +
+/// publish, ack). The heartbeat is gated on its OWN clock so it can never consume the GPS 1/sec
+/// slot. `available` is the session's declared "พร้อมรับงาน" intent — read by the GPS path (every
+/// fix re-asserts it) and written by the availability path.
 #[allow(clippy::too_many_arguments)]
 async fn handle_text(
     db: &sqlx::PgPool,
@@ -300,13 +356,31 @@ async fn handle_text(
     text: &str,
     last_gps: &mut Instant,
     last_heartbeat: &mut Instant,
+    available: &mut bool,
 ) {
     match domain::classify(text) {
         Ok(ClientFrame::Heartbeat) => {
             // Keep-alive only: rate-limit to 1/10s and drop excess. NEVER touches the GPS
-            // clock, recorded_at, or is_online.
+            // clock, recorded_at, or is_online. (Session liveness was already stamped by the
+            // caller for this frame — that is the keep-alive's whole job now.)
             if domain::rate_allows(last_heartbeat.elapsed(), domain::HEARTBEAT_MIN_INTERVAL) {
                 *last_heartbeat = Instant::now();
+            }
+        }
+        Ok(ClientFrame::Availability(next)) => {
+            // The guard flipped "พร้อมรับงาน". Record it for the session AND push it to the row
+            // now, so toggling OFF removes the guard from discovery immediately rather than at the
+            // next fix — a guard tracking a stationary job may not send one for 90s, and every one
+            // of those seconds is a customer able to book someone who said they were done.
+            //
+            // NOT rate-limited: this is a user-intent edge, not a stream. The pre-parse frame-flood
+            // ceiling already bounds abuse, and dropping a toggle would leave the row lying about
+            // the guard. Unchanged value → still written (cheap, idempotent, and it re-asserts
+            // intent if a previous write raced a session takeover).
+            *available = next;
+            if let Err(e) = repo::set_availability(db, guard_id, session, next).await {
+                tracing::error!(guard = %guard_id, available = next, "failed to record availability: {e}");
+                let _ = tx.send(error_frame("could not record availability; retry"));
             }
         }
         Ok(ClientFrame::Gps(update)) => {
@@ -338,7 +412,10 @@ async fn handle_text(
 
             // Independent writes run concurrently (mirrors v1 tracking handlers.rs:172).
             let (upsert_res, history_res, publish_res) = tokio::join!(
-                repo::upsert_location(db, guard_id, session, recorded_at, &clean),
+                // The fix re-asserts the session's DECLARED availability, which is what keeps a
+                // PREVIOUS session's stale `true` from surviving: a socket opened by a job-
+                // tracking lease alone declares nothing, so its first fix writes `false`.
+                repo::upsert_location(db, guard_id, session, recorded_at, *available, &clean),
                 repo::insert_history(db, guard_id, recorded_at, &clean),
                 events::publish_gps(redis_pub, &event),
             );
@@ -553,25 +630,22 @@ mod tests {
         );
     }
 
-    /// END-TO-END over a REAL bound server + a REAL WS client (Bearer on upgrade): a guard
-    /// sends a valid fix → gets an `ack` with a persisted `recorded_at` + the guard is online;
-    /// a `(0,0)` fix → `error` frame (socket stays open); on close the guard is set offline.
-    /// Gated on DATABASE_URL (migrated: presence 0001/0002) + TEST_REDIS_URL. Run:
-    ///   DATABASE_URL=... TEST_REDIS_URL=... cargo test -p pguard-presence -- ws_gps_e2e --nocapture
-    #[tokio::test]
-    async fn ws_gps_e2e_ack_validate_and_offline_on_close() {
+    /// Bind a REAL presence server (the WS route only) on an ephemeral port against a REAL
+    /// Postgres + Redis, returning the pool, its address, and the serve task. `None` when the
+    /// backing services are absent (callers SKIP) — keeps `cargo test` offline-safe.
+    /// Gated on DATABASE_URL (migrated: presence 0001-0005) + TEST_REDIS_URL.
+    async fn e2e_server() -> Option<(
+        sqlx::PgPool,
+        std::net::SocketAddr,
+        tokio::task::JoinHandle<()>,
+    )> {
         use crate::state::{AppState, DbBookingAuthz};
         use shared::config::{JwtConfig, ServiceJwtConfig};
-        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-        use tokio_tungstenite::tungstenite::Message as TMessage;
 
-        let (Ok(db_url), Ok(redis_url)) = (
-            std::env::var("DATABASE_URL"),
-            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL")),
-        ) else {
-            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL required for the gps ws e2e");
-            return;
-        };
+        let db_url = std::env::var("DATABASE_URL").ok()?;
+        let redis_url = std::env::var("TEST_REDIS_URL")
+            .or_else(|_| std::env::var("REDIS_CACHE_URL"))
+            .ok()?;
         let db = PgPoolOptions::new()
             .acquire_timeout(Duration::from_secs(5))
             .connect(&db_url)
@@ -581,7 +655,6 @@ mod tests {
             .await
             .expect("redis conn");
 
-        let guard_id = Uuid::new_v4();
         let jwt_config = JwtConfig {
             secret: SECRET.to_string(),
             expiry_minutes: 15,
@@ -612,6 +685,16 @@ mod tests {
         let server = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
+        Some((db, addr, server))
+    }
+
+    /// Open a REAL guard WS session against [`e2e_server`] (Bearer on the upgrade, as production).
+    async fn e2e_connect(
+        addr: std::net::SocketAddr,
+        guard_id: Uuid,
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
         let ek = EncodingKey::from_secret(SECRET.as_bytes());
         let tok = encode_jwt_with_key(guard_id, "guard", 0, &ek, 15)
@@ -622,9 +705,27 @@ mod tests {
             .unwrap();
         req.headers_mut()
             .insert("Authorization", format!("Bearer {tok}").parse().unwrap());
-        let (mut ws, _) = tokio_tungstenite::connect_async(req)
+        let (ws, _) = tokio_tungstenite::connect_async(req)
             .await
             .expect("ws connect");
+        ws
+    }
+
+    /// END-TO-END over a REAL bound server + a REAL WS client (Bearer on upgrade): a guard
+    /// sends a valid fix → gets an `ack` with a persisted `recorded_at` + the guard is online;
+    /// a `(0,0)` fix → `error` frame (socket stays open); on close the guard is set offline.
+    /// Run:
+    ///   DATABASE_URL=... TEST_REDIS_URL=... cargo test -p pguard-presence -- ws_gps_e2e --nocapture
+    #[tokio::test]
+    async fn ws_gps_e2e_ack_validate_and_offline_on_close() {
+        use tokio_tungstenite::tungstenite::Message as TMessage;
+
+        let Some((db, addr, server)) = e2e_server().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL required for the gps ws e2e");
+            return;
+        };
+        let guard_id = Uuid::new_v4();
+        let mut ws = e2e_connect(addr, guard_id).await;
 
         // 1) valid fix → ack with a recorded_at.
         ws.send(TMessage::Text(
@@ -689,6 +790,136 @@ mod tests {
             .execute(&db)
             .await;
         server.abort();
+    }
+
+    /// END-TO-END proof of the QA 08/09/2569 rule over a REAL socket, exercised exactly the way
+    /// the mobile app drives it: *"Guard ที่ยังไม่ได้เปิด Online Status ต้องไม่แสดงอยู่ในหน้าเลือก
+    /// Guard ให้ Customer เลือก"*.
+    ///
+    /// The sequence IS the bug report. A guard opens tracking for an active job with the toggle
+    /// off (the app opens this same socket for `online || jobIds.isNotEmpty`), streams GPS, and
+    /// must stay out of `online_guard_locations` the whole time. Only the explicit declaration
+    /// puts them in, and taking it back — or dropping the socket — takes them out again.
+    #[tokio::test]
+    async fn ws_availability_e2e_gates_the_customers_guard_list() {
+        use tokio_tungstenite::tungstenite::Message as TMessage;
+
+        let Some((db, addr, server)) = e2e_server().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL required for the availability ws e2e");
+            return;
+        };
+        let guard_id = Uuid::new_v4();
+        let mut ws = e2e_connect(addr, guard_id).await;
+
+        // The offerable set as booking's discovery reads it, at this instant.
+        let offered = |db: sqlx::PgPool| async move {
+            repo::online_guard_locations(&db, domain::session_liveness_cutoff(Utc::now()))
+                .await
+                .expect("offerable set")
+                .iter()
+                .any(|(id, _, _)| *id == guard_id)
+        };
+
+        // 1) Streaming GPS with the toggle OFF (job tracking) — connected, but NOT for sale.
+        ws.send(TMessage::Text(
+            json!({ "type": "location", "lat": 13.7563, "lng": 100.5018 }).to_string(),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(next_json(&mut ws).await["type"], json!("ack"));
+        let row = repo::latest_location(&db, guard_id).await.expect("latest");
+        assert!(row.is_online, "the guard IS connected (the live map works)");
+        assert!(
+            !offered(db.clone()).await,
+            "a guard who never switched Online Status on must NOT be in the customer's list, \
+             even while streaming GPS"
+        );
+
+        // 2) Guard taps "พร้อมรับงาน" → offerable, with NO new fix needed.
+        ws.send(TMessage::Text(
+            json!({ "type": "availability", "available": true }).to_string(),
+        ))
+        .await
+        .unwrap();
+        wait_until(
+            || offered(db.clone()),
+            "declaring availability offers the guard",
+        )
+        .await;
+
+        // 3) Guard taps it off → out of the list at once, while still connected + streaming.
+        ws.send(TMessage::Text(
+            json!({ "type": "availability", "available": false }).to_string(),
+        ))
+        .await
+        .unwrap();
+        wait_until(
+            || {
+                let db = db.clone();
+                async move { !offered(db).await }
+            },
+            "withdrawing availability removes the guard immediately",
+        )
+        .await;
+        assert!(
+            repo::latest_location(&db, guard_id)
+                .await
+                .expect("latest")
+                .is_online,
+            "withdrawing the offer must not disconnect the guard"
+        );
+
+        // 4) Declared available, then the socket drops → the declaration dies with the session,
+        //    so a LATER session (one a job-tracking lease opens) cannot inherit it.
+        ws.send(TMessage::Text(
+            json!({ "type": "availability", "available": true }).to_string(),
+        ))
+        .await
+        .unwrap();
+        wait_until(|| offered(db.clone()), "available again before the drop").await;
+        ws.close(None).await.unwrap();
+        wait_until(
+            || {
+                let db = db.clone();
+                async move { !offered(db).await }
+            },
+            "a disconnect removes the guard from the customer's list",
+        )
+        .await;
+        let row = repo::latest_location(&db, guard_id).await.expect("latest");
+        assert!(!row.is_online, "disconnect sets offline");
+        assert!(
+            !row.available_for_work,
+            "disconnect also revokes the declaration — nothing durable is left to inherit"
+        );
+
+        let _ = sqlx::query("DELETE FROM presence.guard_locations WHERE guard_id = $1")
+            .bind(guard_id)
+            .execute(&db)
+            .await;
+        let _ = sqlx::query("DELETE FROM presence.location_history WHERE user_id = $1")
+            .bind(guard_id)
+            .execute(&db)
+            .await;
+        server.abort();
+    }
+
+    /// Poll `cond` until it holds, or fail with `what`. The WS session applies a frame
+    /// asynchronously (the client gets no ack for an availability declaration), so the test must
+    /// wait for the write rather than race it — bounded at ~5s so a real regression still fails
+    /// fast instead of hanging.
+    async fn wait_until<F, Fut>(mut cond: F, what: &str)
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        for _ in 0..50 {
+            if cond().await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("timed out waiting: {what}");
     }
 
     #[cfg(test)]

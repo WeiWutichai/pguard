@@ -120,17 +120,27 @@ export interface paths {
         /**
          * Live guards + positions (service-to-service)
          * @description Internal read for booking's discovery (`/available-guards`) — the guards who are
-         *     currently OFFERABLE ("พร้อมรับงาน"), each with their LATEST fix position. Membership is
-         *     `is_online` ALONE — deliberately NOT gated on GPS freshness: the mobile uplink is
-         *     movement-gated, so a stationary online guard's last fix ages past the freshness window
-         *     while its socket stays up, and a freshness gate here would drop a connected, offerable
-         *     guard from discovery (bug B). GPS freshness survives only as the green-dot `is_live`
-         *     DISPLAY on the read DTOs, which does not gate this set. Guarded by a **service-JWT**
-         *     (`serviceAuth`, aud `pguard-internal`), never reachable from the public edge (the gateway
-         *     blocks `/internal/`). booking uses membership for the online filter AND the coordinates to
-         *     sort the customer's list nearest-to-meetup (C2). Narrow projection — id + position only,
-         *     none of the heading/speed/accuracy the admin `/locations` bulk read carries
-         *     (least-privilege). Documented here for the contract; not part of the user-facing client.
+         *     currently OFFERABLE, each with their LATEST fix position. Membership is
+         *     `available_for_work AND is_online AND` session liveness (see the rule in `info`):
+         *
+         *       * the guard DECLARED "พร้อมรับงาน" on their tracking session — the hard product rule
+         *         ("Guard ที่ยังไม่ได้เปิด Online Status ต้องไม่แสดงอยู่ในหน้าเลือก Guard"). Merely
+         *         holding a GPS socket, e.g. to let a customer watch an active job, does NOT qualify.
+         *       * that session has been heard from in the last 2 minutes, so rows stranded by a
+         *         presence crash/redeploy expire on their own.
+         *
+         *     Still deliberately NOT gated on GPS freshness: the mobile uplink is movement-gated, so a
+         *     stationary available guard's last fix ages past the freshness window while its socket
+         *     stays up, and a freshness gate here would drop a connected, willing guard from discovery
+         *     (bug B). Session liveness keys on the last FRAME, which keep-alives advance; GPS freshness
+         *     survives only as the green-dot `is_live` DISPLAY on the read DTOs.
+         *
+         *     Guarded by a **service-JWT** (`serviceAuth`, aud `pguard-internal`), never reachable from
+         *     the public edge (the gateway blocks `/internal/`). booking uses membership for the
+         *     availability filter AND the coordinates to sort the customer's list nearest-to-meetup
+         *     (C2); an error from this read makes discovery FAIL CLOSED (`503 PRESENCE_UNAVAILABLE`),
+         *     never fall back to an unfiltered list. Narrow projection — id + position only, none of the
+         *     heading/speed/accuracy the admin `/locations` bulk read carries (least-privilege).
          */
         get: operations["internalOnlineGuards"];
         put?: never;
@@ -169,10 +179,23 @@ export interface components {
             speed?: number | null;
             /** Format: date-time */
             recorded_at: string;
-            /** @description A live WS session is currently connected. */
+            /**
+             * @description A live WS session is currently connected — COMPUTED as the stored flag AND session
+             *     liveness (last frame within 2 minutes), not a raw column read, so a session stranded
+             *     by a presence crash/redeploy is reported as disconnected rather than as still online.
+             */
             is_online: boolean;
-            /** @description Discovery freshness — `is_online AND recorded_at` within the last 5 minutes. */
+            /**
+             * @description Green-dot GPS freshness — `is_online AND recorded_at` within the last 5 minutes.
+             *     DISPLAY only: it does not decide who is offered to customers.
+             */
             is_live: boolean;
+            /**
+             * @description The guard switched "พร้อมรับงาน" ON for this session. This — not `is_online` — is what
+             *     puts the guard in the customer's guard-selection list; a guard streaming GPS for an
+             *     active job is `is_online: true, available_for_work: false`.
+             */
+            available_for_work: boolean;
         };
         HistoryPoint: {
             /** Format: double */

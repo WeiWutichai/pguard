@@ -63,22 +63,35 @@ pub async fn purge_older_than(pool: &PgPool, cutoff: DateTime<Utc>) -> Result<u6
 /// `recorded_at` to the supplied server timestamp, and stamps the OWNING session's id so the
 /// offline write can be fenced to it (see [`set_offline`]). Called only for a real GPS fix —
 /// never for a keep-alive (so a guard who lost GPS but holds the socket does not stay fresh).
+///
+/// `available_for_work` is the session's CURRENT declared intent ("พร้อมรับงาน"), re-asserted on
+/// every fix. Re-asserting matters for correctness, not just convenience: it is what stops a
+/// PREVIOUS session's stale `true` from being inherited. A new session opened by a job-tracking
+/// lease alone declares `false`, and its first fix overwrites whatever the row held — so merely
+/// streaming GPS can never make a guard offerable again (the reported bug).
+///
+/// `last_seen_at` rides along with the fix (session liveness is trivially satisfied by a frame
+/// that reached us), keeping the throttled keep-alive touch off the hot GPS path.
 pub async fn upsert_location(
     db: &PgPool,
     guard_id: Uuid,
     session: Uuid,
     recorded_at: DateTime<Utc>,
+    available_for_work: bool,
     fix: &GpsUpdate,
 ) -> Result<(), AppError> {
     sqlx::query(
         "INSERT INTO presence.guard_locations \
-             (guard_id, lat, lng, accuracy, heading, speed, recorded_at, is_online, connected_session) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8) \
+             (guard_id, lat, lng, accuracy, heading, speed, recorded_at, is_online, \
+              connected_session, available_for_work, last_seen_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $7) \
          ON CONFLICT (guard_id) DO UPDATE SET \
              lat = EXCLUDED.lat, lng = EXCLUDED.lng, \
              accuracy = EXCLUDED.accuracy, heading = EXCLUDED.heading, speed = EXCLUDED.speed, \
              recorded_at = EXCLUDED.recorded_at, is_online = true, \
-             connected_session = EXCLUDED.connected_session",
+             connected_session = EXCLUDED.connected_session, \
+             available_for_work = EXCLUDED.available_for_work, \
+             last_seen_at = EXCLUDED.last_seen_at",
     )
     .bind(guard_id)
     .bind(fix.lat)
@@ -87,6 +100,54 @@ pub async fn upsert_location(
     .bind(fix.heading)
     .bind(fix.speed)
     .bind(recorded_at)
+    .bind(session)
+    .bind(available_for_work)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Record the guard's "พร้อมรับงาน" toggle for the OWNING session, so flipping it mid-connection
+/// takes effect at once instead of waiting for the next fix (a guard tracking a job may not move
+/// for minutes). FENCED on `session` exactly like [`set_offline`]: a superseded socket can never
+/// declare availability on a live reconnect's row.
+///
+/// A no-op when this session has not upserted a fix yet (no row, or `connected_session` still
+/// points elsewhere) — harmless, because the session's very next fix carries the same intent
+/// through [`upsert_location`]. `last_seen_at` is advanced too: the frame proves the session is
+/// alive. `recorded_at` is NOT touched — this is not a position report.
+pub async fn set_availability(
+    db: &PgPool,
+    guard_id: Uuid,
+    session: Uuid,
+    available: bool,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE presence.guard_locations \
+            SET available_for_work = $3, last_seen_at = now() \
+          WHERE guard_id = $1 AND connected_session = $2",
+    )
+    .bind(guard_id)
+    .bind(session)
+    .bind(available)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// Advance SESSION liveness for the owning session — the throttled keep-alive touch driven by
+/// ANY inbound frame (Pong included). Deliberately does NOT touch `recorded_at`, `is_online`, or
+/// `available_for_work`: this says "the socket is alive", never "the guard moved" or "the guard
+/// wants work". Fenced on `session` so a dying socket cannot keep a reconnected one's row warm.
+///
+/// `last_seen_at` is the only column written and is intentionally unindexed, so this stays a HOT
+/// update (no index maintenance) even at one write per live guard per 30s.
+pub async fn touch_seen(db: &PgPool, guard_id: Uuid, session: Uuid) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE presence.guard_locations SET last_seen_at = now() \
+          WHERE guard_id = $1 AND connected_session = $2",
+    )
+    .bind(guard_id)
     .bind(session)
     .execute(db)
     .await?;
@@ -119,6 +180,11 @@ pub async fn insert_history(
 /// Mark the guard offline (WS disconnect / zombie reap). Does NOT touch `recorded_at` — the
 /// last fix's timestamp is preserved so freshness reflects when GPS was actually last seen.
 ///
+/// Also CLEARS `available_for_work`: "พร้อมรับงาน" is an intent declared on a session, so it must
+/// die with the session. Leaving it set would let the next connection — one a job-tracking lease
+/// opens with the toggle OFF — inherit a stale `true` and put the guard back in front of
+/// customers, which is the bug this whole change removes.
+///
 /// FENCED on `session`: only the session that currently OWNS the row (its id was stamped by the
 /// last [`upsert_location`]) may flip it offline. A late-closing OLD socket whose
 /// `connected_session` no longer matches is a no-op — so it can never clobber a freshly
@@ -126,7 +192,7 @@ pub async fn insert_history(
 /// never sent a fix (no row, or `connected_session` still NULL) — they were never on the map.
 pub async fn set_offline(db: &PgPool, guard_id: Uuid, session: Uuid) -> Result<(), AppError> {
     sqlx::query(
-        "UPDATE presence.guard_locations SET is_online = false \
+        "UPDATE presence.guard_locations SET is_online = false, available_for_work = false \
          WHERE guard_id = $1 AND connected_session = $2",
     )
     .bind(guard_id)
@@ -139,7 +205,8 @@ pub async fn set_offline(db: &PgPool, guard_id: Uuid, session: Uuid) -> Result<(
 /// The guard's latest position, or `NotFound` if none recorded.
 pub async fn latest_location(db: &PgPool, guard_id: Uuid) -> Result<GuardLocationRow, AppError> {
     sqlx::query_as::<_, GuardLocationRow>(
-        "SELECT guard_id, lat, lng, accuracy, heading, speed, recorded_at, is_online \
+        "SELECT guard_id, lat, lng, accuracy, heading, speed, recorded_at, is_online, \
+                available_for_work, last_seen_at \
          FROM presence.guard_locations WHERE guard_id = $1",
     )
     .bind(guard_id)
@@ -148,50 +215,82 @@ pub async fn latest_location(db: &PgPool, guard_id: Uuid) -> Result<GuardLocatio
     .ok_or_else(|| AppError::NotFound("No location recorded for this guard".to_string()))
 }
 
-/// All guard positions for the admin map, newest fix first. `online_only` restricts to
-/// currently-connected guards (served by the partial `idx_guard_locations_online`).
+/// All guard positions for the admin map, newest fix first. `online_only` restricts to guards
+/// who hold a LIVE session — the stored `is_online` flag AND `last_seen_at` inside `cutoff`
+/// ([`crate::domain::session_liveness_cutoff`]), the same liveness bound the read DTO's computed
+/// `is_online` applies. Without it, `?online_only=true` would keep listing rows stranded by a
+/// presence crash while every one of them rendered as offline — the filter and the flag would
+/// disagree. Served by the partial `idx_guard_locations_online`.
 ///
 /// NOTE: no guard NAME is joined here — v1 joined `auth.users`, which v2 forbids (no
 /// cross-schema read). The admin map resolves names via the profile service separately.
 pub async fn list_locations(
     db: &PgPool,
     online_only: bool,
+    cutoff: DateTime<Utc>,
 ) -> Result<Vec<GuardLocationRow>, AppError> {
-    let base = "SELECT guard_id, lat, lng, accuracy, heading, speed, recorded_at, is_online \
+    let base = "SELECT guard_id, lat, lng, accuracy, heading, speed, recorded_at, is_online, \
+                       available_for_work, last_seen_at \
                 FROM presence.guard_locations";
-    // `LOCATIONS_MAX` is a fixed constant (never user input) → no injection surface.
+    // `LOCATIONS_MAX` is a fixed constant (never user input) → no injection surface; the cutoff
+    // is a bound parameter.
     let sql = if online_only {
-        format!("{base} WHERE is_online ORDER BY recorded_at DESC LIMIT {LOCATIONS_MAX}")
+        format!(
+            "{base} WHERE is_online AND last_seen_at > $1 \
+             ORDER BY recorded_at DESC LIMIT {LOCATIONS_MAX}"
+        )
     } else {
         format!("{base} ORDER BY recorded_at DESC LIMIT {LOCATIONS_MAX}")
     };
-    let rows = sqlx::query_as::<_, GuardLocationRow>(&sql)
-        .fetch_all(db)
-        .await?;
+    // Bind CONDITIONALLY: the unfiltered branch has no `$1`, and sqlx rejects a query whose
+    // argument count does not match its placeholders.
+    let query = sqlx::query_as::<_, GuardLocationRow>(&sql);
+    let query = if online_only {
+        query.bind(cutoff)
+    } else {
+        query
+    };
+    let rows = query.fetch_all(db).await?;
     Ok(rows)
 }
 
-/// The guards who are currently OFFERABLE for discovery — `is_online` ALONE, carrying each
-/// guard's LATEST fix position `(guard_id, lat, lng)`, which booking's `/available-guards` uses
-/// BOTH to drop OFFLINE guards from the customer list AND to sort the survivors nearest-to-meetup
-/// (C2). One cheap round-trip (not a bulk PII pull).
+/// The guards who are currently OFFERABLE for discovery, carrying each guard's LATEST fix
+/// position `(guard_id, lat, lng)`, which booking's `/available-guards` uses BOTH to drop
+/// non-offerable guards from the customer list AND to sort the survivors nearest-to-meetup (C2).
+/// One cheap round-trip (not a bulk PII pull).
 ///
-/// Membership is `is_online` ONLY — deliberately NOT gated on `recorded_at` freshness (bug B).
-/// The mobile GPS uplink is movement-gated, so a STATIONARY online guard's `recorded_at` ages
-/// past any freshness window while the socket is still up and `is_online = true`; a freshness
-/// predicate here would drop a connected, offerable guard from discovery (the "2 เครื่องออนไลน์
-/// แต่ขึ้นแค่คนเดียว" report). `is_online` is the correct "connected & offerable" signal because
-/// [`set_offline`] reliably flips it false on any disconnect / zombie-reap (fenced by
-/// `connected_session`), so a guard is `is_online = true` iff a live session is currently held.
-/// GPS freshness survives ONLY as the green-dot `is_live` DISPLAY ([`crate::domain::is_live`] in
-/// `to_location`) — it never gates membership here. Served by the partial
-/// `idx_guard_locations_online`. Narrow projection (id + position only, no heading/speed/accuracy)
-/// — least-privilege for the cross-service consult.
-pub async fn online_guard_locations(db: &PgPool) -> Result<Vec<(Uuid, f64, f64)>, AppError> {
-    let rows: Vec<(Uuid, f64, f64)> =
-        sqlx::query_as("SELECT guard_id, lat, lng FROM presence.guard_locations WHERE is_online")
-            .fetch_all(db)
-            .await?;
+/// Membership is three predicates, each load bearing:
+///   1. `available_for_work` — the guard DECLARED "พร้อมรับงาน" on this session. This is the
+///      requirement ("Guard ที่ยังไม่ได้เปิด Online Status ต้องไม่แสดง") and the whole reason 0005
+///      exists: before it, membership keyed on `is_online`, which the ARRIVAL OF A GPS FIX sets —
+///      so a guard streaming GPS for an active job with the toggle OFF was offered to customers.
+///   2. `is_online` — a session is held (flipped false by [`set_offline`] on any clean
+///      disconnect/zombie reap).
+///   3. `last_seen_at > cutoff` — that session has actually been heard from. `set_offline` runs
+///      only inside the WS task, so a presence crash/redeploy strands rows at `is_online = true`
+///      forever; this bound expires them without a boot-time reset (wrong under multiple replicas).
+///
+/// `recorded_at` GPS freshness is STILL not a predicate here (bug B): the movement-gated mobile
+/// uplink lets a stationary online guard's last fix age out while the socket is up, and gating on
+/// it dropped connected, willing guards from discovery. Liveness keys on `last_seen_at` instead,
+/// which keep-alives advance. Freshness survives ONLY as the green-dot `is_live` DISPLAY
+/// ([`crate::domain::is_live`] in `to_location`).
+///
+/// `cutoff` comes from [`crate::domain::session_liveness_cutoff`] so the rule lives in `domain`
+/// and the SQL only carries the bound. Served by the partial `idx_guard_locations_offerable`
+/// (0005). Narrow projection (id + position only, no heading/speed/accuracy) — least-privilege
+/// for the cross-service consult.
+pub async fn online_guard_locations(
+    db: &PgPool,
+    cutoff: DateTime<Utc>,
+) -> Result<Vec<(Uuid, f64, f64)>, AppError> {
+    let rows: Vec<(Uuid, f64, f64)> = sqlx::query_as(
+        "SELECT guard_id, lat, lng FROM presence.guard_locations \
+          WHERE available_for_work AND is_online AND last_seen_at > $1",
+    )
+    .bind(cutoff)
+    .fetch_all(db)
+    .await?;
     Ok(rows)
 }
 
@@ -435,7 +534,7 @@ mod tests {
         let session = Uuid::new_v4();
         let now = Utc::now();
 
-        upsert_location(&pool, guard, session, now, &fix(13.75, 100.50))
+        upsert_location(&pool, guard, session, now, true, &fix(13.75, 100.50))
             .await
             .expect("upsert");
         insert_history(&pool, guard, now, &fix(13.75, 100.50))
@@ -448,14 +547,20 @@ mod tests {
         assert_eq!(row.lat, 13.75);
         assert_eq!(row.accuracy, Some(8.0));
 
-        // online_only bulk list includes the guard.
-        let online = list_locations(&pool, true).await.expect("list online");
+        // online_only bulk list includes the guard (live session, inside the liveness window).
+        let online = list_locations(&pool, true, crate::domain::session_liveness_cutoff(now))
+            .await
+            .expect("list online");
         assert!(online.iter().any(|r| r.guard_id == guard));
 
         // Disconnect → offline, recorded_at untouched. Fenced on the OWNING session.
         set_offline(&pool, guard, session).await.expect("offline");
         let row2 = latest_location(&pool, guard).await.expect("latest2");
         assert!(!row2.is_online, "disconnect sets offline");
+        assert!(
+            !row2.available_for_work,
+            "disconnect also revokes the พร้อมรับงาน declaration — intent dies with the session"
+        );
         assert_eq!(
             row2.recorded_at, row.recorded_at,
             "offline must NOT touch recorded_at"
@@ -478,68 +583,131 @@ mod tests {
             .await;
     }
 
-    /// `online_guard_locations` is the discovery OFFERABLE set: membership is `is_online` ALONE
-    /// (bug B). A connected guard is offered even when its last GPS fix has gone STALE — the
-    /// movement-gated mobile uplink means a STATIONARY online guard's `recorded_at` ages past the
-    /// freshness window while the socket is up, and dropping such a guard from discovery was the
-    /// "2 เครื่องออนไลน์แต่ขึ้นแค่คนเดียว" bug. Both a fresh AND a stale online guard are members
-    /// (each carrying its latest fix coords for the nearest-first sort); an OFFLINE guard is never
-    /// a member. GPS freshness is retained ONLY for the green-dot `is_live` DISPLAY
-    /// ([`crate::domain::is_live`]), which does NOT gate membership here.
+    /// `online_guard_locations` is the discovery OFFERABLE set. This is the QA 08/09/2569 rule
+    /// ("Guard ที่ยังไม่ได้เปิด Online Status ต้องไม่แสดงอยู่ในหน้าเลือก Guard") proved end-to-end
+    /// against a real DB, across all four ways a row can fail to be offerable:
+    ///
+    ///  * DECLINED — connected and streaming GPS but never declared availability. THE reported
+    ///    bug: the app opens this same socket to track an active job with the toggle OFF, so
+    ///    membership keyed on "a fix arrived" put guards who never opted in in front of customers.
+    ///  * OFFLINE — the session disconnected (`set_offline`), which also revokes the declaration.
+    ///  * DEAD — declared + `is_online`, but nothing has been heard from the session inside the
+    ///    liveness window (the crash/redeploy ghost: `set_offline` only runs in the WS task).
+    ///  * STALE GPS — declared, connected, heard from, but the last FIX is 10 minutes old. This
+    ///    one IS still offerable: the mobile uplink is movement-gated, so a stationary guard's
+    ///    `recorded_at` ages out while the socket is fine (bug B — do not re-gate on it).
     #[tokio::test]
-    async fn online_guard_locations_membership_is_online_only() {
+    async fn online_guard_locations_requires_declared_availability_and_a_live_session() {
         let Some(pool) = pool().await else {
             eprintln!("SKIP: DATABASE_URL required for the online-guards membership test");
             return;
         };
-        let fresh_guard = Uuid::new_v4();
-        let stale_guard = Uuid::new_v4();
+        let available_guard = Uuid::new_v4();
+        let declined_guard = Uuid::new_v4();
+        let stale_gps_guard = Uuid::new_v4();
+        let dead_session_guard = Uuid::new_v4();
         let session = Uuid::new_v4();
         let now = Utc::now();
+        let cutoff = crate::domain::session_liveness_cutoff(now);
 
-        // Fresh guard: a fix at `now` → online + fresh.
-        upsert_location(&pool, fresh_guard, session, now, &fix(13.75, 100.50))
-            .await
-            .expect("fresh upsert");
-        // Stale guard: an online fix, but recorded 10 minutes ago (> the 5-minute window).
+        // Declared available, fix at `now`.
         upsert_location(
             &pool,
-            stale_guard,
+            available_guard,
+            session,
+            now,
+            true,
+            &fix(13.75, 100.50),
+        )
+        .await
+        .expect("available upsert");
+        // Streaming GPS for a job, toggle OFF — the guard never declared availability.
+        upsert_location(
+            &pool,
+            declined_guard,
+            session,
+            now,
+            false,
+            &fix(13.80, 100.60),
+        )
+        .await
+        .expect("declined upsert");
+        // Declared available; last FIX 10 minutes old (> the 5-minute freshness window) but the
+        // session was heard from just now — the stationary-guard case.
+        upsert_location(
+            &pool,
+            stale_gps_guard,
             session,
             now - Duration::minutes(10),
+            true,
             &fix(13.76, 100.51),
         )
         .await
-        .expect("stale upsert");
+        .expect("stale-gps upsert");
+        touch_seen(&pool, stale_gps_guard, session)
+            .await
+            .expect("stale-gps stays session-live");
+        // Declared available and still flagged online, but nothing heard for 10 minutes — the row
+        // a crashed/redeployed presence left behind.
+        upsert_location(
+            &pool,
+            dead_session_guard,
+            session,
+            now,
+            true,
+            &fix(13.77, 100.52),
+        )
+        .await
+        .expect("dead-session upsert");
+        sqlx::query("UPDATE presence.guard_locations SET last_seen_at = $2 WHERE guard_id = $1")
+            .bind(dead_session_guard)
+            .bind(now - Duration::minutes(10))
+            .execute(&pool)
+            .await
+            .expect("age the dead session");
 
-        let live = online_guard_locations(&pool)
+        let live = online_guard_locations(&pool, cutoff)
             .await
             .expect("online locations");
 
-        // Membership is is_online-only: the FRESH online guard is offerable, carrying its coords.
-        let fresh = live.iter().find(|(id, _, _)| *id == fresh_guard);
-        assert!(fresh.is_some(), "a fresh online guard is offerable");
-        let (_, lat, lng) = fresh.unwrap();
+        // The declared, connected, live guard IS offerable and carries its coords for the C2 sort.
+        let offered = live.iter().find(|(id, _, _)| *id == available_guard);
+        assert!(
+            offered.is_some(),
+            "a guard who switched Online Status on is offerable"
+        );
+        let (_, lat, lng) = offered.expect("offered row");
         assert!(
             (*lat - 13.75).abs() < 1e-6 && (*lng - 100.50).abs() < 1e-6,
             "offerable row carries the latest fix coords, got ({lat}, {lng})"
         );
 
-        // The STALE online guard is STILL offerable (bug B fix): a stationary online guard whose
-        // fix went cold must not drop from discovery. It carries its last-known fix coords.
-        let stale = live.iter().find(|(id, _, _)| *id == stale_guard);
+        // THE FIX: streaming GPS without declaring availability never reaches a customer.
         assert!(
-            stale.is_some(),
-            "an online-but-stale guard is STILL offerable (is_online-only membership)"
-        );
-        let (_, slat, slng) = stale.unwrap();
-        assert!(
-            (*slat - 13.76).abs() < 1e-6 && (*slng - 100.51).abs() < 1e-6,
-            "stale offerable row carries its last fix coords, got ({slat}, {slng})"
+            !live.iter().any(|(id, _, _)| *id == declined_guard),
+            "a guard who never switched Online Status on must NEVER be offerable, \
+             even while streaming GPS for an active job"
         );
 
-        // Freshness survives ONLY for the green-dot display — is_live is false for the stale fix
-        // and true for the fresh one, but NEITHER gates membership above.
+        // Bug B stays fixed: a stale FIX does not evict a live, willing guard.
+        let stale = live.iter().find(|(id, _, _)| *id == stale_gps_guard);
+        assert!(
+            stale.is_some(),
+            "a stationary guard whose GPS fix aged out is STILL offerable (bug B)"
+        );
+        let (_, slat, slng) = stale.expect("stale row");
+        assert!(
+            (*slat - 13.76).abs() < 1e-6 && (*slng - 100.51).abs() < 1e-6,
+            "stale-GPS offerable row carries its last fix coords, got ({slat}, {slng})"
+        );
+
+        // The ghost expires itself — no boot-time reset needed.
+        assert!(
+            !live.iter().any(|(id, _, _)| *id == dead_session_guard),
+            "a row whose session went silent (presence crash/redeploy) stops being offerable"
+        );
+
+        // GPS freshness survives ONLY as the green-dot display; it gates nothing above.
         assert!(
             crate::domain::is_live(true, now, now),
             "a fresh online fix displays live"
@@ -549,20 +717,97 @@ mod tests {
             "a stale online fix displays not-live (green-dot only, does not gate offerability)"
         );
 
-        // Disconnect the fresh guard → no longer offerable (is_online is the offerable signal).
-        set_offline(&pool, fresh_guard, session)
+        // Disconnect revokes BOTH the session and the declaration.
+        set_offline(&pool, available_guard, session)
             .await
             .expect("offline");
-        let live2 = online_guard_locations(&pool)
+        let live2 = online_guard_locations(&pool, cutoff)
             .await
             .expect("online locations 2");
         assert!(
-            !live2.iter().any(|(id, _, _)| *id == fresh_guard),
-            "an offline guard is never offerable, even with a fresh last fix"
+            !live2.iter().any(|(id, _, _)| *id == available_guard),
+            "a disconnected guard is never offerable, even with a fresh last fix"
+        );
+        let row = latest_location(&pool, available_guard)
+            .await
+            .expect("row after offline");
+        assert!(
+            !row.available_for_work,
+            "the declaration is revoked on disconnect, so the NEXT session (e.g. one a job-\
+             tracking lease opens) cannot inherit it"
         );
 
         let _ = sqlx::query("DELETE FROM presence.guard_locations WHERE guard_id = ANY($1)")
-            .bind(vec![fresh_guard, stale_guard])
+            .bind(vec![
+                available_guard,
+                declined_guard,
+                stale_gps_guard,
+                dead_session_guard,
+            ])
+            .execute(&pool)
+            .await;
+    }
+
+    /// The availability frame (`{"type":"availability"}`) flips offerability WITHOUT waiting for
+    /// the next GPS fix — a guard tracking a stationary job may not send one for 90 s, and every
+    /// one of those seconds after they tap "off" is a customer able to book them. It is FENCED on
+    /// the owning session, exactly like `set_offline`, so a superseded socket cannot declare
+    /// availability on a live reconnect's row.
+    #[tokio::test]
+    async fn set_availability_toggles_offerability_and_is_session_fenced() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL required for the availability-toggle test");
+            return;
+        };
+        let guard = Uuid::new_v4();
+        let session = Uuid::new_v4();
+        let stale_session = Uuid::new_v4();
+        let now = Utc::now();
+        let cutoff = crate::domain::session_liveness_cutoff(now);
+        let offerable = |set: &[(Uuid, f64, f64)]| set.iter().any(|(id, _, _)| *id == guard);
+
+        // Connected with the toggle OFF (the job-tracking case) → not offerable.
+        upsert_location(&pool, guard, session, now, false, &fix(13.75, 100.50))
+            .await
+            .expect("upsert");
+        let set = online_guard_locations(&pool, cutoff).await.expect("set 0");
+        assert!(!offerable(&set), "toggle off → not offered");
+
+        // Guard taps "พร้อมรับงาน" → offerable immediately, no new fix required.
+        set_availability(&pool, guard, session, true)
+            .await
+            .expect("declare available");
+        let set = online_guard_locations(&pool, cutoff).await.expect("set 1");
+        assert!(offerable(&set), "declaring availability offers the guard");
+
+        // A SUPERSEDED socket's declaration is fenced out — it does not own the row.
+        set_availability(&pool, guard, stale_session, false)
+            .await
+            .expect("stale declaration");
+        let set = online_guard_locations(&pool, cutoff).await.expect("set 2");
+        assert!(
+            offerable(&set),
+            "a stale session must not revoke the live session's declaration"
+        );
+
+        // Guard taps it off → gone from discovery at once (still connected, still streaming).
+        set_availability(&pool, guard, session, false)
+            .await
+            .expect("revoke");
+        let set = online_guard_locations(&pool, cutoff).await.expect("set 3");
+        assert!(
+            !offerable(&set),
+            "toggling off removes the guard immediately"
+        );
+        let row = latest_location(&pool, guard).await.expect("row");
+        assert!(
+            row.is_online,
+            "the guard is still CONNECTED (the customer's live map keeps working) — only the \
+             offer is withdrawn"
+        );
+
+        let _ = sqlx::query("DELETE FROM presence.guard_locations WHERE guard_id = $1")
+            .bind(guard)
             .execute(&pool)
             .await;
     }
@@ -582,7 +827,7 @@ mod tests {
         let now = Utc::now();
 
         // Session A connects + sends a fix → owns the row, online.
-        upsert_location(&pool, guard, session_a, now, &fix(13.75, 100.50))
+        upsert_location(&pool, guard, session_a, now, true, &fix(13.75, 100.50))
             .await
             .expect("A upsert");
         // Guard reconnects as session B + sends a fix → B now owns the row.
@@ -591,6 +836,7 @@ mod tests {
             guard,
             session_b,
             now + Duration::seconds(1),
+            true,
             &fix(13.76, 100.51),
         )
         .await
