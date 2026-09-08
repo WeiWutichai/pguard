@@ -117,6 +117,15 @@ class TrackingController extends _$TrackingController {
     if (state.online) return;
     state = state.copyWith(online: true);
     await _ensureStreaming();
+    // Tell the server the guard is accepting work. Until this frame lands the guard is NOT in the
+    // customer's list, no matter how much GPS the socket is carrying — which is exactly the
+    // guarantee the toggle is supposed to give.
+    //
+    // Required even though [_ensureStreaming] declares the toggle on a socket it opens: when a job
+    // lease ALREADY holds the feed open, _ensureStreaming returns early and this is the only
+    // declaration that goes out. (On a fresh connect both fire — one redundant frame, and the
+    // alternative is a toggle that silently does nothing while a job is running.)
+    _feed?.setAvailability(true);
 
     // Cheap safety net: refetch open jobs the moment the guard comes online, so any offer that
     // landed while they were offline (and whose push was therefore not delivered) shows up without
@@ -129,6 +138,12 @@ class TrackingController extends _$TrackingController {
   Future<void> goOffline() async {
     if (!state.online) return;
     state = state.copyWith(online: false);
+    // Withdraw the offer BEFORE any teardown. When a job lease keeps the socket open this frame is
+    // the ONLY thing that removes the guard from discovery — the socket stays up and keeps
+    // reporting GPS, so without it "ปิดรับงาน" would change nothing a customer can see. When no
+    // lease remains, the teardown below drops the socket and the server revokes availability with
+    // it; sending anyway is harmless and covers the race.
+    _feed?.setAvailability(false);
     await _teardownIfIdle();
   }
 
@@ -136,6 +151,11 @@ class TrackingController extends _$TrackingController {
   /// an ACTIVE JOB (accepted/en_route/arrived) regardless of the manual online toggle, so the
   /// customer's live map shows the guard moving. Idempotent per booking; the active-job /
   /// navigation screen takes the lease on enter and releases it on leave (or when the job ends).
+  ///
+  /// Deliberately does NOT touch availability. A lease means "let my customer watch me work", not
+  /// "offer me to new customers" — conflating the two is what put guards with the toggle off into
+  /// the customer's guard list. [_ensureStreaming] declares the toggle's real value on the socket
+  /// it opens, which for a lease-only session is `false`.
   Future<void> startJobStreaming(String bookingId) async {
     if (state.jobIds.contains(bookingId)) return;
     state = state.copyWith(jobIds: {...state.jobIds, bookingId});
@@ -180,6 +200,12 @@ class TrackingController extends _$TrackingController {
     // yet). Bail before subscribing so we never orphan a GPS subscription that streams to a closed
     // feed.
     if (_feed == null || !state.streaming) return;
+
+    // Declare the CURRENT toggle on every freshly-opened socket — including `false`. A feed opened
+    // by a job lease alone must say "not accepting work" out loud: the server treats a new session
+    // as unavailable by default, and stating it explicitly also overwrites anything the row still
+    // holds. This is the line that keeps [startJobStreaming] from advertising the guard.
+    feed.setAvailability(state.online);
 
     _posSub = ref.read(locationServiceProvider).positionStream().listen((s) {
       if (!state.streaming) return;

@@ -31,6 +31,18 @@ class PgCancelReason {
   /// Valid on BOTH endpoints — and the only code that requires a note ([requiresNote]).
   static const String other = 'other';
 
+  // ---- SYSTEM codes (written by the booking scheduler, never by a user) ----------------------
+  // Neither endpoint accepts these and no picker offers them, but they DO arrive on booking reads
+  // and notification payloads, and [labelFor] falls back to the raw code — so without entries in
+  // the label maps a customer would read "system_expired" on their own cancelled job.
+
+  /// An OPEN request whose scheduled window ended before any guard accepted it.
+  static const String systemExpired = 'system_expired';
+
+  /// QA #25: an on-site guard who never started work, closed 30 minutes past the booked window.
+  /// Full refund, no cancellation fee.
+  static const String systemNotStarted = 'system_not_started';
+
   /// The customer's reason options, in the order the cancellation screen renders them
   /// (index 0 is pre-selected, matching the design's default).
   static const List<String> customer = [changedPlan, mistake, notNeeded, other];
@@ -50,6 +62,8 @@ class PgCancelReason {
     sick: 'ป่วย',
     cannotReach: 'เดินทางไปไม่ได้',
     other: 'อื่นๆ',
+    systemExpired: 'หมดเวลา',
+    systemNotStarted: 'เจ้าหน้าที่ไม่ได้เริ่มงาน',
   };
 
   static const Map<String, String> _en = {
@@ -60,6 +74,8 @@ class PgCancelReason {
     sick: 'Sick',
     cannotReach: "Can't reach site",
     other: 'Other',
+    systemExpired: 'Expired',
+    systemNotStarted: 'Guard never started work',
   };
 
   /// The human label for [code] in the active language.

@@ -737,21 +737,16 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
   /// exactly ONCE, and only while the job is still genuinely working (arrived + started, NOT
   /// already pending_completion/completed). The customer then approves via the existing flow.
   ///
-  /// NOTE: this only fires while the guard app is open on THIS screen. A server-side scheduled
-  /// auto-complete (for when the app is backgrounded/closed) is a backend follow-up — not built here.
+  /// Two clocks can trigger it: the WORK clock (booked duration elapsed since the guard started)
+  /// and, since QA #25, the BOOKED WINDOW (`scheduled_at + hours`) — whichever comes first. The
+  /// window one is unconditional: it is the instant past which the customer can no longer ask for
+  /// more work and the server stops paying for it.
+  ///
+  /// NOTE: this only fires while the guard app is open on THIS screen. When it is backgrounded or
+  /// closed, booking's 60s scheduler closes the job 30 minutes past the same window (QA #25) — so
+  /// this is now the fast, guard-visible path, not the only one.
   Future<void> _maybeAutoComplete() async {
     if (_autoCompleted) return;
-
-    // The customer REJECTED a prior completion ("keep working") — they want work past the booked
-    // duration, so the booked-duration auto-complete must not re-fire and undo their choice. The
-    // per-panel `_autoCompleted` flag can't cover this: the reject bounce re-mounts a FRESH working
-    // panel (via resumeFromRejectedCompletion), resetting it — so the guard is the source of truth
-    // for ending from here. Kept in the keep-alive WorkSessionStore so it survives that remount.
-    if (ref
-        .read(workSessionStoreProvider)
-        .isAutoCompleteSuppressed(widget.bookingId)) {
-      return;
-    }
 
     // Read the LIVE controller state (not the captured widget.state) so the status/busy checks
     // reflect any transition that landed since this panel was built.
@@ -759,13 +754,42 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
         ref.read(activeJobControllerProvider(widget.bookingId)).valueOrNull;
     if (live == null || live.busy) return;
 
-    // Only auto-fire while still working: arrived + started, with the countdown known. The instant
-    // the status advances (pending_completion/completed) this is no longer JobStage.working and we
-    // must not fire (the guard may have closed early, or the customer already approved).
+    // Only auto-fire while still working: arrived + started. The instant the status advances
+    // (pending_completion/completed) this is no longer JobStage.working and we must not fire (the
+    // guard may have closed early, or the customer already approved).
     if (live.booking.status != BookingStatus.arrived) return;
+    // …and only once STARTED. A null clock means no `work_started_at`, and the server refuses a
+    // completion request on an unstarted job (409) — firing anyway would just spin the retry
+    // backoff below. That booking is the scheduler's to cancel, not this screen's to complete.
     final clock = live.clock;
     if (clock == null) return;
-    if (!clock.isTimeUp(DateTime.now().toUtc())) return;
+
+    final now = DateTime.now().toUtc();
+    // QA #25 — the BOOKED window (scheduled_at + hours), the same bound the server enforces. Past
+    // it the customer can no longer send the guard back out (409 JOB_WINDOW_CLOSED), and the
+    // worked duration is capped at this instant either way, so every extra minute on site is
+    // unpaid. Firing here is what stops the guard working for free until the 30-min server sweep.
+    final windowClosed = live.booking.isPastScheduledWindow(now);
+
+    if (!windowClosed) {
+      // The customer REJECTED a prior completion ("keep working") — INSIDE the window that is a
+      // legitimate ask for more of the time they paid for, so the booked-duration auto-complete
+      // must not re-fire and undo their choice. The per-panel `_autoCompleted` flag can't cover
+      // this: the reject bounce re-mounts a FRESH working panel (via resumeFromRejectedCompletion),
+      // resetting it. Kept in the keep-alive WorkSessionStore so it survives that remount.
+      //
+      // The suppression is bounded by the window, not permanent: once it closes there is nothing
+      // left to undo (the reject the flag protects is now server-refused), and leaving it set
+      // would just park the guard on site with the countdown at 00:00.
+      if (ref
+          .read(workSessionStoreProvider)
+          .isAutoCompleteSuppressed(widget.bookingId)) {
+        return;
+      }
+      // Inside the window the WORK clock decides (a late start still gets its booked hours; the
+      // server bills whichever ends first).
+      if (!clock.isTimeUp(now)) return;
+    }
 
     // Claim the single shot BEFORE awaiting the network so re-entrant ticks bail at the top.
     _autoCompleted = true;

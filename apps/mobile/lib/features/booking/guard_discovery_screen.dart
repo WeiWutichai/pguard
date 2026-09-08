@@ -72,11 +72,15 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen>
   Future<void> _runRefresh() async {
     if (!mounted) return;
     setState(() => _updating = true);
-    await ref.read(bookingFlowControllerProvider.notifier).refreshGuards();
+    final ok =
+        await ref.read(bookingFlowControllerProvider.notifier).refreshGuards();
     if (!mounted) return;
     setState(() {
       _updating = false;
-      _lastUpdatedAt = DateTime.now();
+      // Only a refresh that LANDED may move the clock. Stamping it unconditionally dated a list
+      // that had not been re-verified — and this list's whole claim is "these guards are online
+      // right now", so a fresh timestamp over an unconfirmed list is the wrong kind of reassuring.
+      if (ok) _lastUpdatedAt = DateTime.now();
     });
   }
 

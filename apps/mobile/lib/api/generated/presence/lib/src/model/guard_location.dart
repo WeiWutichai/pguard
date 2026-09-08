@@ -18,8 +18,9 @@ part 'guard_location.g.dart';
 /// * [heading] - Degrees
 /// * [speed] - m/s.
 /// * [recordedAt] 
-/// * [isOnline] - A live WS session is currently connected.
-/// * [isLive] - Discovery freshness — `is_online AND recorded_at` within the last 5 minutes.
+/// * [isOnline] - A live WS session is currently connected — COMPUTED as the stored flag AND session liveness (last frame within 2 minutes), not a raw column read, so a session stranded by a presence crash/redeploy is reported as disconnected rather than as still online. 
+/// * [isLive] - Green-dot GPS freshness — `is_online AND recorded_at` within the last 5 minutes. DISPLAY only: it does not decide who is offered to customers. 
+/// * [availableForWork] - The guard switched \"พร้อมรับงาน\" ON for this session. This — not `is_online` — is what puts the guard in the customer's guard-selection list; a guard streaming GPS for an active job is `is_online: true, available_for_work: false`. 
 @BuiltValue()
 abstract class GuardLocation implements Built<GuardLocation, GuardLocationBuilder> {
   @BuiltValueField(wireName: r'guard_id')
@@ -46,13 +47,17 @@ abstract class GuardLocation implements Built<GuardLocation, GuardLocationBuilde
   @BuiltValueField(wireName: r'recorded_at')
   DateTime get recordedAt;
 
-  /// A live WS session is currently connected.
+  /// A live WS session is currently connected — COMPUTED as the stored flag AND session liveness (last frame within 2 minutes), not a raw column read, so a session stranded by a presence crash/redeploy is reported as disconnected rather than as still online. 
   @BuiltValueField(wireName: r'is_online')
   bool get isOnline;
 
-  /// Discovery freshness — `is_online AND recorded_at` within the last 5 minutes.
+  /// Green-dot GPS freshness — `is_online AND recorded_at` within the last 5 minutes. DISPLAY only: it does not decide who is offered to customers. 
   @BuiltValueField(wireName: r'is_live')
   bool get isLive;
+
+  /// The guard switched \"พร้อมรับงาน\" ON for this session. This — not `is_online` — is what puts the guard in the customer's guard-selection list; a guard streaming GPS for an active job is `is_online: true, available_for_work: false`. 
+  @BuiltValueField(wireName: r'available_for_work')
+  bool get availableForWork;
 
   GuardLocation._();
 
@@ -126,6 +131,11 @@ class _$GuardLocationSerializer implements PrimitiveSerializer<GuardLocation> {
     yield r'is_live';
     yield serializers.serialize(
       object.isLive,
+      specifiedType: const FullType(bool),
+    );
+    yield r'available_for_work';
+    yield serializers.serialize(
+      object.availableForWork,
       specifiedType: const FullType(bool),
     );
   }
@@ -213,6 +223,13 @@ class _$GuardLocationSerializer implements PrimitiveSerializer<GuardLocation> {
             specifiedType: const FullType(bool),
           ) as bool;
           result.isLive = valueDes;
+          break;
+        case r'available_for_work':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(bool),
+          ) as bool;
+          result.availableForWork = valueDes;
           break;
         default:
           unhandled.add(key);
