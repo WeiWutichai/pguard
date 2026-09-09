@@ -19,15 +19,28 @@
 //! - [`pricing::ChargeTerms`] — the commission / cancellation-fee snapshot payment carries from
 //!   the booking onto the payment row.
 //! - [`proration`] — `compute_proration` (ported verbatim from v1), reused by the settle subtotal.
+//! - [`settlement`] — where ONE job's money actually WENT: the customer's payment split into the
+//!   guard's income, the VAT, the WHT, the refund and **ยอดที่โดนหักเข้าระบบ** (the platform's own
+//!   cut, stream ②). Carries the invariant that the parts reconstruct the whole, to the satang, and
+//!   owns `guard_gross`/`commission_on` — the two helpers [`payout`] deducts with and the sweep
+//!   sweeps with, so the guard's pay and the platform's cut can never disagree.
+//! - [`csv`] — the server-side CSV writer (RFC 4180 quoting + a UTF-8 BOM + formula neutralisation)
+//!   behind the two tax reports an accountant opens in a spreadsheet.
 
+pub mod batch_status;
+pub mod csv;
+pub mod deduction;
 pub mod payout;
 pub mod pricing;
 pub mod promptpay;
 pub mod proration;
+pub mod refund_export;
 pub mod scb_export;
+pub mod settlement;
 pub mod slip;
+pub mod thai_id;
 
 pub use pricing::{
-    cancellation_fee_charged, expected_total, is_negative_terminal, is_payable_status,
-    price_breakdown, reconcile, ChargeTerms, PriceBreakdown, Reconciliation,
+    cancellation_fee_charged, expected_total, is_negative_terminal, is_payable_status, reconcile,
+    ChargeTerms, PriceBreakdown, PricingInputs, Reconciliation,
 };

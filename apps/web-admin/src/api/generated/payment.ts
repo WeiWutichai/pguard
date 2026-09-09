@@ -78,8 +78,10 @@ export interface paths {
          * List ALL payments cross-user (role=admin, read-only ledger)
          * @description The admin payment ledger — every payment (NOT owner-scoped, unlike `GET /payments`),
          *     newest first, with optional `status` and `customer_id` filters + limit/offset. Admin
-         *     only (else 403). READ ONLY: there is no manual refund-process action here (v2 refunds
-         *     are event-driven).
+         *     only (else 403). READ ONLY because refunds LEAVE AS A BATCH, not because they are
+         *     automatic: they are sent through `POST /admin/refunds/export` (one SCB upload file), which
+         *     is also the only thing that advances a refund to `processed`. There is deliberately no
+         *     per-row refund action on this ledger.
          */
         get: operations["adminListPayments"];
         put?: never;
@@ -103,13 +105,264 @@ export interface paths {
          *     (`refund_status` is set), newest first. Feeds the dashboard "แจ้งเตือน / คิวคืนเงิน" card.
          *     Optional `status` filter (`pending` = awaiting action, `processed` = done; omitted → both)
          *     + limit/offset. Returns the page of refund rows PLUS the total `count` matching the same
-         *     filter (the badge count, independent of the page window). Admin only (else 403). READ ONLY:
-         *     v2 refunds are event-driven (a settle sets `refund_status='pending'`) — there is no manual
-         *     refund-process action here yet.
+         *     filter (the badge count, independent of the page window). Admin only (else 403).
+         *
+         *     READ ONLY, and LANE A only (`payment.payments`). The money actually leaves through
+         *     `POST /admin/refunds/export`, which covers both lanes — the other being the duplicate-transfer
+         *     `payment.payment_slips` row, which this queue has never listed. A settle only ever sets
+         *     `refund_status='pending'`; the export is what advances it to `'processed'`.
          */
         get: operations["adminRefundQueue"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/refunds/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview the customer-refund batch (role=admin)
+         * @description The UNREFUNDED backlog aggregated PER CUSTOMER — who would get back how much — PLUS the
+         *     customers EXCLUDED from the batch with the reason (no customer profile / no name / no usable
+         *     PromptPay phone / a transfer outside SCB's per-transaction bounds). Every row carries its
+         *     `customer_id` so the screen can tick a subset and pass those ids to the export.
+         *
+         *     THE DESTINATION MUST BE A THAI MOBILE. A refund is credited only to a stored phone that is a
+         *     genuine 10-digit Thai mobile (leading `0`) — never to a value that merely happens to be 13 or
+         *     15 digits long, which SCB would stamp `NAT`/`EWL` and PromptPay to whoever owns that id. A
+         *     customer whose stored phone is anything else is EXCLUDED with a reason asking for it to be
+         *     corrected, and nothing of theirs is marked processed. (The guard payout is deliberately more
+         *     permissive: a guard's proxy is a tax id they supplied as a payment address.)
+         *
+         *     TWO LANES are summed into each row and both are covered: `payment.payments`
+         *     (`refund_status = 'pending'` with `refund_amount > 0` — the completion-reconcile overpay, the
+         *     cancellation refund, the race-lost pre-pay compensator) and `payment.payment_slips`
+         *     (`applied = false` and pending — a genuine double-transfer for an already-paid booking).
+         *
+         *     Optional `from`/`to` narrow the backlog to obligations that became owed within a Thai local
+         *     day window. READ ONLY: computes but persists nothing and marks nothing processed. Admin only.
+         */
+        get: operations["previewRefunds"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/refunds/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate + download the SCB customer-refund upload file (role=admin)
+         * @description Build ONE SCB Business Net bulk-upload file that refunds MANY customers — one `TXNDET` per
+         *     customer inside a single `BCHDET` batch, summing every obligation that customer is owed
+         *     across BOTH lanes — PERSIST the batch + a per-obligation paid-marker, ADVANCE those
+         *     obligations to `refund_status = 'processed'` in the same transaction, and return the file as
+         *     `text/plain` (UTF-8, no BOM) for download. The download filename is
+         *     `SCB_file_reference_<first 12 chars of the file ref>.txt`.
+         *
+         *     NO WITHHOLDING. A refund is the customer's own money coming back, not assessable income, so
+         *     every line carries `wht = 0` and the file contains no `WHTCER` and no `WHTDET`. The ภ.ง.ด.
+         *     settings and the company tax id are therefore NOT required — only the debit accounts and the
+         *     fee-charge code from `/admin/payouts/config`. The destination is the phone REGISTRATION
+         *     already captured (the PromptPay `MOB` proxy); no new customer PII is collected for refunds.
+         *
+         *     The request body is OPTIONAL: send none to refund the whole backlog, or narrow the run with
+         *     `customer_ids` (the preview's tick list) and/or a `from`/`to` day window, and optionally pin
+         *     the `value_date`. Customers left out — and customers excluded for an unreachable profile or
+         *     an out-of-bounds amount — are neither written to the file NOR marked processed.
+         *
+         *     409 `REFUND_ALREADY_EXPORTED` if a concurrent export already claimed an obligation, 409
+         *     `REFUND_BATCH_REF_TAKEN` if ANY export — a refund or a guard payout, since both ride
+         *     PromptPay off the same one-second clock — committed in the same Bangkok second (the batch
+         *     reference has one-second resolution, and two files must never share the references the bank
+         *     de-dups on), or 409 `REFUND_QUEUE_CHANGED` if a source row moved underneath the run. In every case the whole transaction rolls back, so NOTHING was
+         *     marked processed and the same click a moment later succeeds. 400 when the selection is
+         *     empty/invalid, `value_date` is in the past, nothing is refundable, or the debit config is
+         *     incomplete. Admin only.
+         */
+        post: operations["exportRefunds"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/refunds/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Generated refund files (role=admin)
+         * @description The history of generated SCB refund files, newest first, with the total count for paging.
+         *     Header rows only — the stored file text is served by `/admin/refunds/batches/{id}/file`, and
+         *     `has_file` says whether that re-download will work. Admin only.
+         */
+        get: operations["listRefundBatches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/refunds/batches/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One refund file + the obligations it settled (role=admin)
+         * @description The batch header plus every per-obligation paid-marker it wrote. An item carrying `voided_at`
+         *     was returned to the refundable queue (its source row is `pending` again); the row is kept as
+         *     history rather than deleted. Admin only.
+         */
+        get: operations["getRefundBatch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/refunds/batches/{id}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Re-download a generated refund file (role=admin)
+         * @description The STORED file text, byte for byte, with the same `text/plain; charset=utf-8` content type
+         *     and `SCB_file_reference_<first 12 chars of the file ref>.txt` filename the export served.
+         *
+         *     This is the escape hatch from the one-way door: the export marks the obligations processed and
+         *     then streams the file ONCE, so without a stored copy a failed download / closed tab / proxy
+         *     timeout would leave those customers marked refunded with no file to actually refund them. The
+         *     text is never REGENERATED — the backlog has moved on, so a regenerated file would differ under
+         *     the same batch ref. 404 for an unknown batch or one with no stored text. Admin only.
+         */
+        get: operations["downloadRefundBatchFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/refunds/batches/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record where a refund file got to at the bank (role=admin)
+         * @description Move the batch along its lifecycle: `generated → uploaded → confirmed | rejected`. Each step
+         *     stamps its own timestamp, so the batch keeps the full history. Admin only.
+         *
+         *     `voided` is NOT accepted here (400): a void must also un-mark every item AND flip its source
+         *     row back to `pending` — that is what returns the money to the queue — and must carry a reason,
+         *     so it has its own endpoint. An illegal step is a typed 409: `REFUND_BATCH_TERMINAL` (the batch
+         *     is `confirmed` or `voided` — a confirmed batch is money that already moved and can never be
+         *     re-opened), `REFUND_BATCH_ALREADY_VOIDED`, or `REFUND_BATCH_TRANSITION`.
+         */
+        post: operations["setRefundBatchStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/refunds/batches/{id}/void": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Void a refund file and return its obligations to the queue (role=admin)
+         * @description Cancel a refund file that never reached the bank (or that the bank refused) and RETURN every
+         *     obligation in it to the refundable queue, so those customers can be paid by a fresh file. Both
+         *     halves happen: the item rows are flagged `voided_at` (kept as history — the paid-marker unique
+         *     is partial on that flag) AND each source row goes back to `refund_status = 'pending'`. Either
+         *     half alone would leave the customer permanently unrefunded.
+         *
+         *     `reason` is REQUIRED and must be non-blank: a void moves money back into the queue, and six
+         *     months later a void with no reason cannot be told apart from a mis-click. A `confirmed` batch
+         *     can NEVER be voided (the transfers went out — un-marking would refund those customers a second
+         *     time) and a second void is a typed 409, not a silent success. Admin only.
+         */
+        post: operations["voidRefundBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/refunds/batches/{id}/items/void": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Return SOME of a refund file's obligations to the queue (role=admin)
+         * @description Put the named obligations back in the refundable queue while every OTHER obligation in the
+         *     file stays settled and the batch's own status is left alone. Admin only.
+         *
+         *     This is the remedy for the everyday partial failure: SCB can ACCEPT a bulk file and still fail
+         *     individual credit lines — a PromptPay proxy not linked to a receiving account is the usual
+         *     cause. The file is structurally valid, so the batch is honestly `confirmed`; a handful of
+         *     customers simply never got their money. Voiding the WHOLE batch would un-settle the ones who
+         *     DID, and is refused outright once the batch is `confirmed`.
+         *
+         *     It therefore works at ANY batch status, `confirmed` included, and deliberately does not walk
+         *     the lifecycle state machine: the status records what the bank did with the FILE (still true),
+         *     while this records which OBLIGATIONS it actually settled. `reason` is REQUIRED and non-blank.
+         *
+         *     Each obligation is named by the `(source_kind, source_id)` PAIR the batch drill-down reports —
+         *     a bare id would be ambiguous, because `payment` and `slip` are separate tables with separate
+         *     id spaces. Rejections are typed, never a partial success: 400 for an empty `sources` (that
+         *     would be the whole-batch action), an unknown `source_kind` or a blank reason; 404 when an
+         *     obligation is not in THIS batch; 409 `REFUND_ITEM_ALREADY_VOIDED` when one was already
+         *     returned.
+         */
+        post: operations["voidRefundBatchItems"];
         delete?: never;
         options?: never;
         head?: never;
@@ -153,7 +406,8 @@ export interface paths {
          * Preview the guard-payout batch (role=admin)
          * @description The UNPAID guard-payout backlog aggregated PER GUARD — who would be paid what (income / WHT
          *     withheld / net transfer via PromptPay) — PLUS the guards EXCLUDED from the batch with the
-         *     reason (missing name / tax id / a usable PromptPay proxy). Every row carries its `guard_id`
+         *     reason (no profile row / missing name, tax id, address or a usable PromptPay proxy / a
+         *     transfer outside SCB's per-transaction bounds). Every row carries its `guard_id`
          *     so the screen can tick a subset and pass those ids to the export. Optional `from`/`to`
          *     narrow the backlog to jobs finished within a day window. READ ONLY: computes but persists
          *     nothing and marks nothing paid. Admin only.
@@ -178,20 +432,541 @@ export interface paths {
         put?: never;
         /**
          * Generate + download the SCB guard-payout upload file (role=admin)
-         * @description Build ONE SCB Business Net bulk-upload file that pays MANY guards — one `TXNDET` (+ `WHTCER`
-         *     when tax is withheld) per guard inside a single `BCHDET` batch, whose totals are the sum of
+         * @description Build ONE SCB Business Net bulk-upload file that pays MANY guards — one `TXNDET` per guard
+         *     inside a single `BCHDET` batch (plus a `WHTCER` certificate header and its own `WHTDET`
+         *     income-detail record when tax is withheld from that guard), whose totals are the sum of
          *     every transfer. PERSIST the batch + a per-booking paid-marker (so no job is ever paid twice),
-         *     and return the file as `text/plain` (UTF-8, no BOM) for download.
+         *     and return the file as `text/plain` (UTF-8, no BOM) for download. The download filename is
+         *     `SCB_file_reference_<first 12 chars of the file ref>.txt`.
          *
          *     The request body is OPTIONAL: send none to pay the whole unpaid backlog (every payable
          *     guard), or narrow the run with `guard_ids` (the admin's tick list) and/or a `from`/`to` day
-         *     window. Guards left out are neither written to the file nor marked paid.
+         *     window, and optionally pin the `value_date`. Guards left out — and guards excluded for a
+         *     missing/invalid profile or an out-of-bounds amount — are neither written to the file nor
+         *     marked paid.
          *
-         *     409 `PAYOUT_ALREADY_PAID` if a concurrent export already claimed a booking; 400 when the
-         *     selection is empty/invalid, nothing is payable, or the company/debit config is incomplete.
-         *     Admin only.
+         *     409 `PAYOUT_ALREADY_PAID` if a concurrent export already claimed a booking, or 409
+         *     `PAYOUT_BATCH_REF_TAKEN` if ANY export — another payout or a customer refund, since both ride
+         *     PromptPay off the same one-second clock — committed in the same Bangkok second. The batch
+         *     reference has one-second resolution, and two files must never share the references the bank
+         *     de-dups on. The losing export's whole transaction rolls back, so NOTHING
+         *     was marked paid and the same click a moment later succeeds. 400 when the selection is
+         *     empty/invalid, `value_date` is in the past, nothing is payable, or the company/debit config
+         *     is incomplete (including a stored ภ.ง.ด. or fee-charge code outside SCB's tables). Admin only.
          */
         post: operations["exportPayout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/payouts/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Generated payout files (role=admin)
+         * @description The history of generated SCB payout files, newest first, with the total count for paging.
+         *     Header rows only — the stored file text is served by `/admin/payouts/batches/{id}/file`, and
+         *     `has_file` says whether that re-download will work (files generated before the text was
+         *     stored have no copy). Admin only.
+         */
+        get: operations["listPayoutBatches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/payouts/batches/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One payout file + the bookings it paid (role=admin)
+         * @description The batch header plus every per-booking paid-marker it wrote. An item carrying `voided_at`
+         *     belongs to a VOIDED batch: the row is kept as history (the guard was in that file) but the
+         *     booking is payable again. Admin only.
+         */
+        get: operations["getPayoutBatch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/payouts/batches/{id}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Re-download a generated payout file (role=admin)
+         * @description The STORED file text, byte for byte, with the same `text/plain; charset=utf-8` content type
+         *     and `SCB_file_reference_<first 12 chars of the file ref>.txt` filename the export served.
+         *
+         *     This is the escape hatch from the one-way door: the export marks the bookings paid and then
+         *     streams the file ONCE, so a failed download / closed tab / proxy timeout used to leave those
+         *     jobs paid forever with no copy of the file meant to pay them. The text is never REGENERATED —
+         *     a regenerated file could differ (config, WHT rate or a guard profile changed) under the same
+         *     batch ref. 404 both for an unknown batch and for one generated before the text was stored.
+         *     Admin only.
+         */
+        get: operations["downloadPayoutBatchFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/payouts/batches/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record where a payout file got to at the bank (role=admin)
+         * @description Move the batch along its lifecycle: `generated → uploaded → confirmed | rejected`. Each step
+         *     stamps its own timestamp, so the batch keeps the full history. Admin only.
+         *
+         *     `voided` is NOT accepted here (400): a void must also un-mark every item — that is what
+         *     returns the bookings to the payable backlog — and must carry a reason, so it has its own
+         *     endpoint. An illegal step is a typed 409: `PAYOUT_BATCH_TERMINAL` (the batch is `confirmed`
+         *     or `voided` — a confirmed batch is money that already moved and can never be re-opened),
+         *     `PAYOUT_BATCH_ALREADY_VOIDED`, or `PAYOUT_BATCH_TRANSITION`.
+         */
+        post: operations["setPayoutBatchStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/payouts/batches/{id}/void": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Void a payout file and return its work to the backlog (role=admin)
+         * @description Cancel a batch that never reached the bank (or that the bank refused) and RETURN every
+         *     booking in it to the payable backlog, so the guards can be paid by a fresh file. The item
+         *     rows are kept as history (flagged `voided_at`), not deleted — the paid-marker unique is
+         *     partial on that flag, which is what makes those bookings payable again.
+         *
+         *     `reason` is REQUIRED and must be non-blank: a void moves money back into the queue, and six
+         *     months later a void with no reason cannot be told apart from a mis-click. A `confirmed`
+         *     batch can NEVER be voided (the transfers went out — un-marking would pay those guards a
+         *     second time) and a second void is a typed 409, not a silent success. Admin only.
+         */
+        post: operations["voidPayoutBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/payouts/batches/{id}/items/void": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Return SOME of a payout file's bookings to the backlog (role=admin)
+         * @description Put the named bookings back in the payable backlog while every OTHER booking in the file
+         *     stays paid and the batch's own status is left alone. Admin only.
+         *
+         *     This is the remedy for the everyday partial failure: SCB can ACCEPT a bulk file and still
+         *     fail individual credit lines — an unregistered PromptPay proxy, or one not linked to a
+         *     receiving account, is the usual cause. The file is structurally valid, so the batch is
+         *     honestly `confirmed`; a handful of guards simply never got their money. Voiding the WHOLE
+         *     batch would un-pay the guards who DID get paid, and is refused outright once the batch is
+         *     `confirmed`.
+         *
+         *     It therefore works at ANY batch status, `confirmed` included, and deliberately does not walk
+         *     the lifecycle state machine: the status records what the bank did with the FILE (still true),
+         *     while this records which BOOKINGS it actually paid. `reason` is REQUIRED and non-blank — this
+         *     is the record of why money the ledger says was paid is queued to be paid again.
+         *
+         *     Rejections are typed, never a partial success: 400 for an empty `booking_ids` (that would be
+         *     the whole-batch action) or a blank reason, 404 when a `booking_id` is not in THIS batch, 409
+         *     `PAYOUT_ITEM_ALREADY_VOIDED` when one was already returned.
+         */
+        post: operations["voidPayoutBatchItems"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/deductions/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview the platform-cut sweep (role=admin)
+         * @description Stream ② **ยอดที่โดนหักเข้าระบบ** — the itemised cut for the window, before any of it moves.
+         *     Totals per component (commission / retained cancellation fee / tip / unpaid multi-guard share
+         *     / proration rounding), the job count, the per-job ledger, and the jobs EXCLUDED because their
+         *     pricing snapshot is incomplete, each with a Thai reason.
+         *
+         *     WHAT IS SWEPT: the commission deducted from the guard's pay, the cancellation fee retained
+         *     when a customer backs out, the tip, and the billed-but-unpaid share of a multi-guard booking.
+         *     The last two are in the cut only because of two KNOWN, DEFERRED bugs (the customer is billed
+         *     a tip the guard never receives; a booking billed for N guards pays exactly one), so they are
+         *     itemised rather than folded into "commission" — fixing either bug moves that figure.
+         *
+         *     WHAT IS NOT SWEPT, and never will be from here: **VAT** and the **WHT withheld from guards**.
+         *     Both are the Revenue Department's money sitting in the same bank account, remitted by
+         *     e-filing (ภ.พ.30 monthly, ภ.ง.ด.3/53 by the 7th of the following month) — see
+         *     `/admin/reports/vat-register` and `/admin/reports/wht-payees`. They are reported here, clearly
+         *     labelled as excluded, so nobody later "simplifies" them into the transfer.
+         *
+         *     A job whose snapshot is incomplete (a charge predating the VAT split or the pricing snapshot)
+         *     CANNOT be priced — `subtotal = base_fee × hours × guards + tip` is one equation in four
+         *     unknowns — so it is EXCLUDED and COUNTED rather than silently contributing zero, which would
+         *     under-state the cut. Optional `from`/`to` narrow the window to the Thai local days the jobs
+         *     were SETTLED (the same basis the guard-payout backlog uses, so the two halves of one job move
+         *     together). READ ONLY: persists nothing and marks nothing swept.
+         *
+         *     `total_amount` is what the file would TRANSFER: `billed_cut_total` LESS `uncollected_total`,
+         *     the part of those bills the customer never actually paid (the completion reconcile's `Extra`
+         *     arm records a settled bill above the pre-payment and captures nothing). Both halves are shown
+         *     rather than the cut quietly shrinking — sweeping money that never arrived would draw down an
+         *     account that also holds the Revenue Department's VAT and the guards' unpaid income.
+         *
+         *     With both ends omitted the window is the WHOLE unswept backlog; if that exceeds what the
+         *     service will buffer, the response is a typed 400 asking for a narrower window rather than a
+         *     truncated total. Preview and export are refused identically, so an admin can never export a
+         *     different set of jobs from the one they previewed. Admin only.
+         */
+        get: operations["previewDeductions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/deductions/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate + download the SCB platform-cut sweep file (role=admin)
+         * @description Build ONE SCB Business Net upload file (product **`OAT`**, own-account transfer) that sweeps
+         *     the platform's cut for the window out of the account receiving customer money and into the
+         *     company revenue account, PERSIST the batch + its per-job ledger (which marks those jobs
+         *     swept), and return the file as `text/plain` (UTF-8, no BOM). The download filename is
+         *     `SCB_file_reference_<first 12 chars of the file ref>.txt`.
+         *
+         *     STRUCTURALLY DIFFERENT from the other two streams: an `OAT` batch credits ONE destination, so
+         *     the file carries a SINGLE `TXNDET` summing the whole sweep and the per-booking rows are the
+         *     LEDGER behind that one credit line, not separate recipients. `recipient_count` is therefore
+         *     always 1 and `job_count` is the interesting number. The per-transaction bound applies to the
+         *     WHOLE sweep for the same reason — and an account credit has effectively no bank ceiling, so
+         *     only the configured `max_transfer_per_txn` can bite, at which point the remedy is a narrower
+         *     day window (the error says so).
+         *
+         *     CONFIG REQUIRED: the company debit accounts, the fee-charge code, and `revenue_account` — the
+         *     credit destination, which must be an SCB account (10 digits passing the §14 check digit) and
+         *     is validated both at save time and here. The company NAME is required too (`TXNDET` field 13
+         *     is mandatory); the company TIN is NOT, because nothing is withheld and no ภ.ง.ด. certificate
+         *     is emitted.
+         *
+         *     NO PER-JOB TICK LIST, deliberately: there is one destination, so there is nobody to choose
+         *     between, and sweeping half a day's cut would leave the rest looking unswept for a reason
+         *     nobody could reconstruct later. Send no body to sweep the whole unswept backlog.
+         *
+         *     409 `DEDUCTION_ALREADY_SWEPT` if a concurrent export claimed a job; 409
+         *     `DEDUCTION_BATCH_REF_TAKEN` if ANY export — payout, refund or sweep — committed in the same
+         *     Bangkok second (the batch reference has one-second resolution and it is what the bank de-dups
+         *     a batch on). In both cases the whole transaction rolls back, so NOTHING was marked swept and
+         *     the same click a moment later succeeds. 400 when the window is invalid, `value_date` is in
+         *     the past, there is nothing to sweep, the total is not a positive transferable amount, or the
+         *     account config is incomplete. Admin only.
+         */
+        post: operations["exportDeductions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/deductions/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Generated platform-cut sweep files (role=admin)
+         * @description The history of generated sweep files, newest first, with the total count for paging. Header
+         *     rows only — the stored file text is served by `/admin/deductions/batches/{id}/file`, and
+         *     `has_file` says whether that re-download will work. Admin only.
+         */
+        get: operations["listDeductionBatches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/deductions/batches/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One sweep file + the jobs it collected (role=admin)
+         * @description The batch header plus every job whose cut it collected — the LEDGER behind the file's single
+         *     credit line. An item carrying `voided_at` is back in the sweepable backlog (the row is kept as
+         *     history, not deleted). Admin only.
+         */
+        get: operations["getDeductionBatch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/deductions/batches/{id}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Re-download a generated sweep file (role=admin)
+         * @description The STORED file text, byte for byte, with the same content type and filename the export
+         *     served. Never regenerated — the backlog has moved on since, so a regenerated file would differ
+         *     under the same batch reference. 404 when the batch is unknown or has no stored text. Admin only.
+         */
+        get: operations["downloadDeductionBatchFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/deductions/batches/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record where a sweep file got to at the bank (role=admin)
+         * @description `generated → uploaded → confirmed | rejected`, enforced by the ONE shared transition table.
+         *     `confirmed` and `voided` are TERMINAL. `voided` is refused here by name (400): voiding must
+         *     also release every job in the batch and must carry a reason, so it has its own endpoint —
+         *     coming through this door it would flip the header while leaving the jobs claimed, i.e. never
+         *     sweepable again. Admin only.
+         */
+        post: operations["setDeductionBatchStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/deductions/batches/{id}/void": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel a sweep file and return its jobs to the backlog (role=admin)
+         * @description The escape hatch from the one-way door: a batch whose file was lost (or that the bank refused)
+         *     would otherwise leave its jobs marked swept — cut recorded as collected with no money moved —
+         *     with only a hand-written UPDATE to undo it. Flips the header to `voided` and releases EVERY
+         *     live job, which is what puts them back in the sweepable backlog. The reason is REQUIRED.
+         *
+         *     A CONFIRMED batch cannot be voided (409 `DEDUCTION_BATCH_TERMINAL`): the money moved, so
+         *     releasing its jobs would sweep the same cut a second time. The remedy for a confirmed batch
+         *     that was wrong is a correcting transfer, or the per-item void below. Admin only.
+         */
+        post: operations["voidDeductionBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/deductions/batches/{id}/items/void": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Return SOME of a sweep's jobs to the backlog (role=admin)
+         * @description Release the NAMED jobs, leaving every other job in the file collected and the batch's own
+         *     status untouched. The trigger is not a failed credit line (an `OAT` file has ONE line, which
+         *     the bank takes or does not): it is a job that should never have been collected — a settled row
+         *     later found to be wrong, or a sweep run over a window an admin did not mean.
+         *
+         *     **REFUSED ONCE THE BATCH IS `confirmed` (409 `DEDUCTION_BATCH_CONFIRMED`) — the OPPOSITE of
+         *     the payout and refund files.** Theirs carry one credit line PER RECIPIENT, so an individual
+         *     PromptPay credit can genuinely bounce inside a file the bank accepted and releasing that one
+         *     item is right. This file carries ONE credit line for the whole batch, so `confirmed` means the
+         *     entire summed amount moved into the revenue account; releasing a job would return its cut to
+         *     the backlog and the next sweep would move it a SECOND time. The correct remedies, which the
+         *     Thai error names, are a whole-batch void (if the money truly did not move) or a manual
+         *     accounting adjustment (if it did).
+         *
+         *     On every other status it works, and the reason is mandatory: the audit record carries it plus
+         *     the released amount, which is what ties this file's stated total to the next sweep's.
+         *
+         *     404 if a named job is not in THIS batch; 409 `DEDUCTION_ITEM_ALREADY_VOIDED` if one was
+         *     already released. Admin only.
+         */
+        post: operations["voidDeductionBatchItems"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/reports/vat-register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Output-VAT register (รายงานภาษีขาย) for one month — ภ.พ.30 (role=admin)
+         * @description One line per settled payment that charged VAT: the Thai calendar day the customer PAID, the
+         *     payment/booking/customer ids, the VAT-exclusive subtotal and the VAT; plus the period totals
+         *     an accountant transcribes onto the ภ.พ.30 form.
+         *
+         *     BUCKETED ON `paid_at`, and it matters: Thai VAT on a service has its tax point at RECEIPT OF
+         *     PAYMENT, and it is the same basis `/admin/reports/revenue` uses, so the register and the
+         *     revenue chart tie out line for line. (The platform-cut sweep buckets on the settle timestamp
+         *     instead — a different question. The three streams can only be reconciled because each says
+         *     which basis it uses.) The AMOUNTS are the SETTLED split, so a job paid in one month and
+         *     prorated in the next reports its final VAT in the month it was paid.
+         *
+         *     The customer is reported as an ID, not a name: resolving names would be a cross-service
+         *     fan-out per row on a report that runs to thousands of rows a month, and the admin panel
+         *     already has a batch resolver (`POST /admin/users/resolve`).
+         *
+         *     `format=csv` returns the spreadsheet an accountant works in — rendered SERVER-SIDE with RFC
+         *     4180 quoting, a UTF-8 BOM (without it Excel on Thai Windows renders Thai as mojibake) and
+         *     formula neutralisation (including a lead hidden behind leading whitespace or a control byte,
+         *     which spreadsheet importers strip before parsing the cell), plus a TOTAL row.
+         *
+         *     A month with more rows than the service will buffer is a typed 400 asking for a narrower
+         *     period, never a truncated list — a short VAT total is a number an accountant would file.
+         *     Admin only.
+         */
+        get: operations["vatRegisterReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/reports/wht-payees": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * ภ.ง.ด.3/53 payee list for one month (role=admin)
+         * @description Every guard who had tax withheld from a payout in the period, with their TIN, name, address,
+         *     the income type, the gross assessable income paid and the tax withheld — plus the period
+         *     totals. This reads `payout_batch_items.wht`, which has been WRITE-ONLY since the payout
+         *     shipped: the one figure the law requires us to report was previously unreachable from the
+         *     running system.
+         *
+         *     BUCKETED ON the payout batch's `value_date` — the day the transfer settles is the day the
+         *     payment to the payee is made, which is the month the filing covers (due by the 7th of the
+         *     following month). Not the file's creation date: generating a file on the 31st for a value date
+         *     of the 1st would file the withholding a month early.
+         *
+         *     ONLY BATCHES WHOSE MONEY ACTUALLY MOVED ARE COUNTED — money that was never paid was never
+         *     withheld, and a return that declares withholding which did not occur is an over-declaration to
+         *     the Revenue Department with a payee certificate nobody can match. Status by status:
+         *     `generated` IN (the certificate is produced and the file is on its way; if it never lands the
+         *     admin voids it, which removes it here), `uploaded` IN, `confirmed` IN, **`rejected` OUT** (the
+         *     bank refused the file — not one baht was transferred), `voided` OUT. Individually voided
+         *     ITEMS are excluded too, which is what covers a per-item void on an otherwise-good batch.
+         *
+         *     A capped-out month is a typed 400 telling the admin to narrow the period, never a silently
+         *     truncated list: a short tax return looks exactly like a correct one.
+         *
+         *     `form_type_code` and `income_type_code` are reported exactly as stored in the payout config —
+         *     which ภ.ง.ด. form applies is the operator's TAX decision, and a report that silently corrected
+         *     it would be filing something other than what was certified to the payee. A payee whose profile
+         *     is missing is STILL LISTED with blank PII, because the withholding happened.
+         *
+         *     `format=csv` as above (server-rendered, BOM'd, with a TOTAL row). Admin only.
+         */
+        get: operations["whtPayeeReport"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -606,14 +1381,32 @@ export interface components {
             /** @description Account the transfer fees are debited from (defaults to the debit account). */
             fee_debit_account?: string | null;
             /**
-             * @description ภ.ง.ด. form code (53 = payments to a company).
+             * @description The company SCB account the PLATFORM-CUT sweep (stream ②, product `OAT`) is CREDITED to.
+             *     `null` until an admin sets it; `POST /admin/deductions/export` refuses to run without it.
+             *     Validated as a real SCB account (10 digits passing the §14 check digit) at save time AND
+             *     again at export — an `OAT` line may credit no other bank, and a check-digit typo is
+             *     BATCH-fatal: SCB rejects the file after the jobs in it were marked swept.
+             */
+            revenue_account?: string | null;
+            /**
+             * @description ภ.ง.ด. form code. SCB accepts exactly seven values — `01`, `03`, `04`, `11`, `12`, `13`,
+             *     `53` (`Master_data!TBWHTType`) — and they are NOT sequential, so treat them as a lookup,
+             *     never a range. `04` = ภ.ง.ด.3 (payments to an individual), `53` = ภ.ง.ด.53 (payments to a
+             *     juristic person). A guard paid on a 13-digit national-id PromptPay proxy is an individual.
              * @example 53
              */
             wht_form_type_code?: string;
-            /** @example 1 */
+            /**
+             * @description `Master_data!TBWHTPayType`: `1` ผู้จ่ายออกครั้งเดียว, `2` ออกให้ตลอดไป, `3` หักภาษี ณ ที่จ่าย,
+             *     `4` อื่นๆ. `4` is a real SCB code but NOT supported here — it requires a free-text remark
+             *     on the certificate that pguard does not model, so saving it is a 400.
+             * @example 1
+             */
             wht_pay_type_code?: string;
             /**
-             * @description Assessable-income type (service fee).
+             * @description Assessable-income type (`Master_data!TBIncomeType`). Fifteen codes, and they are NOT
+             *     integers: `1`, `2`, `3`, `4a`, `4b1.1`…`4b1.4`, `4b2.1`…`4b2.5`, `5`, `6`. Security
+             *     service fee is `5`.
              * @example 5
              */
             wht_income_type_code?: string;
@@ -630,6 +1423,32 @@ export interface components {
              */
             product_code?: string;
             /**
+             * @description Who bears the transfer fee (`Master_data!TBFeeOther`) — it rides EVERY credit line
+             *     (`TXNDET` field 8) and the bank requires it. `OUR` = the company pays the fee, which is
+             *     the payout default because it is the only value that leaves the guard receiving exactly
+             *     the amount our ledger records; `BEN` deducts the fee from the guard's credit, so our
+             *     books and the bank's would disagree about the same transfer.
+             * @example OUR
+             * @enum {string}
+             */
+            fee_charge_code?: "OUR" | "BEN";
+            /**
+             * @description Whether SCB should SMS the guard about the transfer (`TXNDET` fields 9/10). OFF by
+             *     default: the bank bills per message and the number is the guard's login phone. It does
+             *     NOT affect how the money is addressed — the same phone is still the PromptPay `MOB`
+             *     proxy for a guard with no tax id.
+             * @example false
+             */
+            sms_notify?: boolean;
+            /**
+             * @description Per-transaction transfer cap in THB (exact decimal, string; null = uncapped). A guard
+             *     whose TOTAL transfer exceeds it is EXCLUDED from the batch with a reason rather than
+             *     written as a line SCB would reject. Default `2000000` — the SMART/ORFT/PromptPay limit
+             *     for a `NAT`/`MOB` proxy (the ฿10,000 figure applies only to a 15-digit E-Wallet proxy).
+             * @example 2000000
+             */
+            max_transfer_per_txn?: string | null;
+            /**
              * Format: date-time
              * @description null until first saved.
              */
@@ -639,12 +1458,544 @@ export interface components {
         UpdatePayoutConfigRequest: {
             debit_account?: string | null;
             fee_debit_account?: string | null;
+            /**
+             * @description The company account the platform-cut sweep credits. Must be a valid SCB account (10 digits
+             *     + check digit) or it is a 400 on the settings screen rather than a bounced money file.
+             *     Null keeps the stored value.
+             */
+            revenue_account?: string | null;
+            /**
+             * @description One of the seven ภ.ง.ด. codes (`01`, `03`, `04`, `11`, `12`, `13`, `53`); anything else
+             *     is a 400. They are not a range — validate by lookup.
+             */
             wht_form_type_code?: string | null;
+            /**
+             * @description `1`, `2` or `3`. `4` (อื่นๆ) is refused with its own message: SCB requires a free-text
+             *     pay-type remark alongside it and there is no field for one yet.
+             */
             wht_pay_type_code?: string | null;
+            /** @description One of the fifteen `TBIncomeType` codes (`1`…`6`, `4a`, `4b1.1`…`4b2.5`); anything else is a 400. */
             wht_income_type_code?: string | null;
             wht_income_desc?: string | null;
+            /**
+             * @description `OUR` (company pays the transfer fee — recommended) or `BEN` (deducted from the guard);
+             *     anything else is a 400. Null keeps the stored value, so this mandatory credit-line field
+             *     can never be blanked through this API.
+             */
+            fee_charge_code?: string | null;
+            /** @description Opt in/out of the bank's SMS to the guard. Null keeps the stored value. */
+            sms_notify?: boolean | null;
             /** @description 0–100 (exact decimal, string). */
             wht_rate_percent?: string | null;
+            /**
+             * @description Per-transaction transfer cap in THB (exact decimal, string). Must not be negative (400).
+             *     Null keeps the stored value — like every field here, the cap cannot be CLEARED through
+             *     this API, only changed.
+             */
+            max_transfer_per_txn?: string | null;
+        };
+        /**
+         * @description All fields optional; an absent body sweeps the whole unswept backlog. There is deliberately NO
+         *     per-job tick list — an `OAT` file credits ONE destination, so there is nobody to choose
+         *     between, and sweeping half a day's cut would leave the rest looking unswept for a reason
+         *     nobody could reconstruct later.
+         */
+        ExportDeductionRequest: {
+            /**
+             * Format: date
+             * @description Inclusive first day the job was SETTLED (Thai local day).
+             */
+            from?: string | null;
+            /**
+             * Format: date
+             * @description Inclusive last day the job was SETTLED (Thai local day).
+             */
+            to?: string | null;
+            /**
+             * Format: date
+             * @description The batch's effective/value date. Omit for "today in Bangkok, rolled off a weekend"; set
+             *     it to schedule a later settlement day or to step over a Thai public holiday (the platform
+             *     has no holiday calendar). A PAST date is a 400 — SCB rejects a back-dated batch.
+             */
+            value_date?: string | null;
+        };
+        /**
+         * @description A job whose cut could NOT be computed. Its cut is counted nowhere and it is NOT marked swept,
+         *     so it reappears in the next preview instead of silently contributing zero — a report that
+         *     under-states the platform's cut is worse than one that says "N jobs unknown".
+         */
+        ExcludedJob: {
+            /** Format: uuid */
+            payment_id: string;
+            /** Format: uuid */
+            booking_id: string;
+            /**
+             * @description `NOT_SETTLED` — the reconcile has not run, so the cut is not final yet (it will be next
+             *     run). `NO_VAT_SPLIT` — the charge predates the VAT split, so our money cannot be told from
+             *     the Revenue Department's. `NO_PRICING_SNAPSHOT` — the charge predates the pricing snapshot;
+             *     NOT recoverable, because `subtotal = base_fee × hours × guards + tip` is one equation in
+             *     four unknowns and booking's current row is not what the job was billed on.
+             *     `DOES_NOT_RECONCILE` — the stored money columns disagree with each other; a human question,
+             *     never a number to sweep.
+             * @enum {string}
+             */
+            code: "NOT_SETTLED" | "NO_VAT_SPLIT" | "NO_PRICING_SNAPSHOT" | "DOES_NOT_RECONCILE";
+            /** @description The Thai sentence the admin reads. */
+            reason: string;
+        };
+        /** @description One job's cut, every component itemised so an accountant can see WHY it contributes what it does. */
+        PreviewCutJob: {
+            /** Format: uuid */
+            payment_id: string;
+            /** Format: uuid */
+            booking_id: string;
+            /**
+             * Format: date
+             * @description The Bangkok day the job was settled — the basis the window filters on.
+             */
+            settled_on: string;
+            /** @description Deducted from the guard's pay (exact decimal, string). */
+            commission: string;
+            /** @description The VAT-EXCLUSIVE part of a retained cancellation fee. */
+            cancellation_fee: string;
+            /** @description In the cut only because of a KNOWN, DEFERRED bug: the customer is billed a gratuity the guard never receives. */
+            tip: string;
+            /** @description In the cut only because of a KNOWN, DEFERRED bug: a booking billed for N guards pays exactly one. */
+            unpaid_guard_share: string;
+            /** @description Satang of drift between prorating on the unrounded worked-hours ratio and paying on actual_hours rounded to 2 dp. May be NEGATIVE — the platform really can be marginally out of pocket on one job. */
+            rounding_adjustment: string;
+            /**
+             * @description BILLED AND NEVER COLLECTED, and SUBTRACTED from `amount`. The completion reconcile's
+             *     `Extra` arm records a settled bill above what the customer pre-paid and captures nothing,
+             *     so this much of the cut is not in the bank. The guard's income and the VAT are owed in
+             *     full whatever the customer transferred, so the whole shortfall falls on the platform's
+             *     share rather than being pro-rated across the components.
+             */
+            uncollected: string;
+            /** @description The job's total cut = the five components LESS `uncollected`. May be NEGATIVE, in which case the job nets DOWN against the rest of the sweep. */
+            amount: string;
+        };
+        /**
+         * @description The per-component totals of a sweep. VAT and the guard income still owed are reported
+         *     ALONGSIDE and are explicitly NOT part of `total_amount` — the question this screen answers
+         *     ("what happens to the money in the receiving account?") has three answers, and showing only
+         *     one invites the other two to be swept by mistake later.
+         *
+         *     `total_amount` = `billed_cut_total − uncollected_total`, and both halves are shown: money the
+         *     platform earned on a bill the customer never fully paid must be visible as such, not silently
+         *     missing from the figure an admin reconciles the transfer against.
+         */
+        DeductionPreview: {
+            job_count: number;
+            /** @description What the file transfers: `billed_cut_total − uncollected_total`. */
+            total_amount: string;
+            commission_total: string;
+            cancellation_fee_total: string;
+            tip_total: string;
+            unpaid_guard_share_total: string;
+            /** @description May be negative. */
+            rounding_adjustment_total: string;
+            /** @description Σ of the five components above — what the settled BILLS earned, before asking whether the customer transferred it. */
+            billed_cut_total: string;
+            /**
+             * @description BILLED AND NEVER COLLECTED — the reconcile's `Extra` arm wrote a settled bill above the
+             *     pre-payment and captured nothing. DEDUCTED from `total_amount`, and given its own line so
+             *     an admin can see that billed-but-unpaid money exists. Sweeping it would move baht that
+             *     never arrived out of an account that also holds the Revenue Department's VAT and the
+             *     guards' unpaid income.
+             */
+            uncollected_total: string;
+            /** @description Collected FOR the Revenue Department and remitted via ภ.พ.30 — shown so it is visible */
+            vat_not_swept: string;
+            /** @description Still owed to guards out of these jobs; it leaves via the guard-payout file (stream ③) */
+            guard_income_not_swept: string;
+            /** @description Capped at 500 rows; `excluded_count` is the true total. */
+            excluded: components["schemas"]["ExcludedJob"][];
+            excluded_count: number;
+            /** @description The per-job ledger, capped at 500 rows. The TOTALS above always cover every job in the window. */
+            jobs: components["schemas"]["PreviewCutJob"][];
+            jobs_truncated: boolean;
+            /** @description The destination masked to its last 4. `null` when no revenue account is configured — so the screen can say so instead of the export being where an admin finds out. */
+            credit_account_masked?: string | null;
+        };
+        /** @description One generated platform-cut sweep file (header only). */
+        DeductionBatch: {
+            /** Format: uuid */
+            id: string;
+            /** @description `HEADER` field 1 = batch_ref || `OAT`. NOT the download filename. */
+            file_ref: string;
+            /** @example PGUARD-DEDUCT */
+            system_ref: string;
+            /** @description `BCHDET` field 1 — the bare 12-digit DDMMYYHHMMSS Bangkok stamp. */
+            batch_ref: string;
+            /** Format: date */
+            value_date: string;
+            /** @description Σ of every job's cut — and, because an OAT batch credits one destination, also the single TXNDET amount. */
+            total_amount: string;
+            /** @description The company account this file credited */
+            credit_account: string;
+            /** @description Always 1 — an OAT batch credits ONE destination. `job_count` is the number that means something here. */
+            recipient_count: number;
+            /** @description How many jobs' cuts this sweep collected. */
+            job_count: number;
+            /**
+             * @description Lifecycle: `generated → uploaded → confirmed | rejected`; `generated`/`uploaded`/`rejected`
+             *     → `voided`. `confirmed` and `voided` are TERMINAL — the same table the payout and refund
+             *     files walk.
+             * @enum {string}
+             */
+            status: "generated" | "uploaded" | "confirmed" | "rejected" | "voided";
+            status_note?: string | null;
+            void_reason?: string | null;
+            /** @description Whether the stored text exists */
+            has_file: boolean;
+            /** Format: uuid */
+            created_by?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            uploaded_at?: string | null;
+            /** Format: date-time */
+            confirmed_at?: string | null;
+            /** Format: date-time */
+            rejected_at?: string | null;
+            /** Format: date-time */
+            voided_at?: string | null;
+            /** Format: uuid */
+            voided_by?: string | null;
+        };
+        /**
+         * @description One JOB whose cut a sweep collected — a LEDGER row behind the file's single credit line, not a
+         *     recipient. The components are stored separately so a report can still say what the money WAS
+         *     after the two deferred bugs (tip, guard_count) are fixed.
+         */
+        DeductionBatchItem: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: uuid
+             * @description The swept-marker key.
+             */
+            payment_id: string;
+            /** Format: uuid */
+            booking_id: string;
+            commission: string;
+            cancellation_fee: string;
+            tip: string;
+            unpaid_guard_share: string;
+            /** @description May be negative. */
+            rounding_adjustment: string;
+            /** @description Billed and never collected — SUBTRACTED from `amount`. 0 on every ordinary job. */
+            uncollected: string;
+            /** @description commission + cancellation_fee + tip + unpaid_guard_share + rounding_adjustment − uncollected (a DB CHECK enforces it). May be negative. */
+            amount: string;
+            /**
+             * Format: date-time
+             * @description Set = this job is back in the sweepable backlog (the row is kept as history, not deleted).
+             */
+            voided_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        DeductionBatchList: {
+            batches: components["schemas"]["DeductionBatch"][];
+            /**
+             * Format: int64
+             * @description Total matching batches
+             */
+            total: number;
+        };
+        DeductionBatchDetail: components["schemas"]["DeductionBatch"] & {
+            items: components["schemas"]["DeductionBatchItem"][];
+        };
+        SetDeductionBatchStatusRequest: {
+            /**
+             * @description `voided` is refused here (400) — it must release every job and carry a reason, so it has its own endpoint.
+             * @enum {string}
+             */
+            status: "uploaded" | "confirmed" | "rejected";
+            /** @description Optional free text kept with the change (typically the bank's own rejection message). Max 500 characters. */
+            note?: string | null;
+        };
+        VoidDeductionBatchRequest: {
+            /**
+             * @description REQUIRED and non-blank. A void returns every job in the batch to the sweepable backlog,
+             *     and six months later "voided" with no reason cannot be told apart from a mis-click. Max
+             *     500 characters.
+             */
+            reason: string;
+        };
+        VoidDeductionBatchItemsRequest: {
+            /** @description The jobs to release. Must be non-empty (an empty list is NOT "all of them" — that is the whole-batch void), and every one must belong to THIS batch and still be live. */
+            payment_ids: string[];
+            /** @description REQUIRED and non-blank — the record of why money the ledger says was collected is going back in the queue. Max 500 characters. */
+            reason: string;
+        };
+        /** @description One line of the output-VAT register — one settled payment. */
+        VatRegisterRow: {
+            /**
+             * Format: date
+             * @description The Bangkok day the customer PAID — the VAT tax point for a service.
+             */
+            date: string;
+            /** Format: uuid */
+            payment_id: string;
+            /** Format: uuid */
+            booking_id: string;
+            /**
+             * Format: uuid
+             * @description Resolve names in bulk via `POST /admin/users/resolve` — this report does not fan out per row.
+             */
+            customer_id: string;
+            /** @description The VAT-EXCLUSIVE settled bill (exact decimal, string). */
+            subtotal: string;
+            /** @description The VAT charged on it. */
+            vat: string;
+            /** @description `subtotal + vat` — what the tax invoice totals. */
+            total: string;
+        };
+        VatRegisterReport: {
+            /** @example 2026-09 */
+            month: string;
+            rows: components["schemas"]["VatRegisterRow"][];
+            row_count: number;
+            total_subtotal: string;
+            /** @description The figure transcribed onto the ภ.พ.30. */
+            total_vat: string;
+            total_amount: string;
+        };
+        /**
+         * @description One payee of the ภ.ง.ด.3/53 filing, summed over every LIVE payout item in the period whose
+         *     batch actually moved money (`generated`/`uploaded`/`confirmed`). A `rejected` batch — the bank
+         *     refused the file — and a `voided` one withheld nothing and are both excluded.
+         */
+        WhtPayeeRow: {
+            /** Format: uuid */
+            guard_id: string;
+            /**
+             * @description The payee's TIN, reported AS STORED (a report is the wrong place to silently reshape an
+             *     identifier that goes onto a government form). `null` when profile has no id on file — the
+             *     row is still reported, because the money WAS withheld and the filing has to account for it.
+             */
+            tax_id?: string | null;
+            name?: string | null;
+            address?: string | null;
+            /** Format: int64 */
+            job_count: number;
+            /** @description Gross assessable income paid (exact decimal, string). */
+            income: string;
+            /** @description Tax withheld — the figure the law requires us to report. */
+            wht: string;
+        };
+        WhtPayeeReport: {
+            /** @example 2026-09 */
+            month: string;
+            /**
+             * @description From the stored payout config, reported EXACTLY as stored — `53` = ภ.ง.ด.53 (juristic
+             *     person), `04` = ภ.ง.ด.3 (individual). Which form applies is the operator's TAX decision;
+             *     a report that silently corrected it would be filing something other than what was
+             *     certified to the payee.
+             * @example 53
+             */
+            form_type_code: string;
+            /** @example 5 */
+            income_type_code: string;
+            /** @example ค่าบริการรักษาความปลอดภัย */
+            income_description: string;
+            rows: components["schemas"]["WhtPayeeRow"][];
+            payee_count: number;
+            total_income: string;
+            total_wht: string;
+        };
+        /**
+         * @description WHICH table owes a refund obligation. `payment` = `payment.payments` (the completion-reconcile
+         *     overpay, the cancellation refund, the race-lost pre-pay compensator); `slip` =
+         *     `payment.payment_slips` (a genuine double-transfer for an already-paid booking). The two are
+         *     separate tables with separate id spaces, so an obligation is always named by the PAIR.
+         * @enum {string}
+         */
+        RefundSourceKind: "payment" | "slip";
+        /** @description ONE refund obligation, named exactly as the batch drill-down reports it. */
+        RefundSourceRef: {
+            source_kind: components["schemas"]["RefundSourceKind"];
+            /**
+             * Format: uuid
+             * @description The owing row's id — `payments.id` or `payment_slips.id`, per `source_kind`.
+             */
+            source_id: string;
+        };
+        /**
+         * @description Optional narrowing of the refund run. Omit the body entirely (or leave every field null) to
+         *     refund the WHOLE backlog. `customer_ids` is the preview screen's tick list — MANY customers
+         *     ride one file; customers left out stay owed and reappear in the next run (they are not marked
+         *     processed). `from`/`to` bound the days the refunds became owed.
+         */
+        ExportRefundRequest: {
+            /** @description Refund only these customers (1–500). Null = every refundable customer in the window. */
+            customer_ids?: string[] | null;
+            /**
+             * Format: date
+             * @description Inclusive first day the refund became owed (Thai local day).
+             */
+            from?: string | null;
+            /**
+             * Format: date
+             * @description Inclusive last day the refund became owed (Thai local day).
+             */
+            to?: string | null;
+            /**
+             * Format: date
+             * @description The batch's effective/value date. Omit for today in Asia/Bangkok rolled forward off a
+             *     weekend; set it to schedule a later settlement day or to step over a Thai public holiday
+             *     (the platform has no holiday calendar). A PAST date is a 400 — SCB rejects a back-dated
+             *     batch outright.
+             */
+            value_date?: string | null;
+        };
+        PreviewRefundRecipient: {
+            /**
+             * Format: uuid
+             * @description Send this id back in `ExportRefundRequest.customer_ids` to refund exactly this customer.
+             */
+            customer_id: string;
+            name: string;
+            /** @description PromptPay proxy (the registration phone) masked to its last 4 (PII). */
+            proxy_masked: string;
+            /**
+             * Format: int64
+             * @description Pending obligations this row's amount covers, across both lanes (one TXNDET returns them all).
+             */
+            obligation_count: number;
+            /** @description Total to transfer back (2dp string). */
+            amount: string;
+        };
+        ExcludedCustomer: {
+            /** Format: uuid */
+            customer_id: string;
+            /**
+             * @description Thai copy explaining why this customer cannot be refunded in this batch — no customer
+             *     profile, no name for the mandatory recipient column, no usable PromptPay phone, or a total
+             *     outside SCB's per-transaction bounds (the reason names the bound). Their obligations stay
+             *     `pending`; nothing about them is marked processed.
+             */
+            reason: string;
+            /** Format: int64 */
+            obligation_count: number;
+        };
+        RefundPreview: {
+            recipients: components["schemas"]["PreviewRefundRecipient"][];
+            excluded: components["schemas"]["ExcludedCustomer"][];
+            /** Format: int64 */
+            recipient_count: number;
+            /** @description Σ transfers the file would debit (2dp string). */
+            total_amount: string;
+        };
+        /**
+         * @description One generated SCB customer-refund file — the header only (the file text is its own endpoint).
+         *     The lifecycle is `generated → uploaded → confirmed | rejected`, with
+         *     `generated`/`uploaded`/`rejected` also able to go to `voided`; `confirmed` and `voided` are
+         *     TERMINAL.
+         */
+        RefundBatch: {
+            /** Format: uuid */
+            id: string;
+            /** @description HEADER field 1 = batch_ref || product code (e.g. `070926120000PPY`). NOT the download filename. */
+            file_ref: string;
+            /** @description HEADER field 2 — `PGUARD-REFUND` (the payout file carries `PGUARD-PAYOUT`). */
+            system_ref: string;
+            /** @description BCHDET field 1 — the bare 12-digit DDMMYYHHMMSS Bangkok stamp. */
+            batch_ref: string;
+            /** Format: date */
+            value_date: string;
+            /** @description Σ transfers the file debits (2dp string). */
+            total_amount: string;
+            /** @description How many CUSTOMERS the file refunds (= TXNDET lines) — NOT how many obligations; a customer owed three refunds is one recipient. */
+            recipient_count: number;
+            /** @enum {string} */
+            status: "generated" | "uploaded" | "confirmed" | "rejected" | "voided";
+            /** @description Free text kept with the latest status change (typically the bank's own message). */
+            status_note?: string | null;
+            void_reason?: string | null;
+            /** @description Whether the file text is stored and can be re-downloaded. */
+            has_file: boolean;
+            /** Format: uuid */
+            created_by?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            uploaded_at?: string | null;
+            /** Format: date-time */
+            confirmed_at?: string | null;
+            /** Format: date-time */
+            rejected_at?: string | null;
+            /** Format: date-time */
+            voided_at?: string | null;
+            /** Format: uuid */
+            voided_by?: string | null;
+        };
+        /**
+         * @description One refund OBLIGATION settled by this batch (the paid-marker). `voided_at` set = the
+         *     obligation was returned to the refundable queue and its source row is `pending` again; the row
+         *     is kept as history rather than deleted.
+         */
+        RefundBatchItem: {
+            /** Format: uuid */
+            id: string;
+            source_kind: components["schemas"]["RefundSourceKind"];
+            /**
+             * Format: uuid
+             * @description The owing row — `payments.id` or `payment_slips.id`.
+             */
+            source_id: string;
+            /**
+             * Format: uuid
+             * @description What the refund is for.
+             */
+            booking_id: string;
+            /** Format: uuid */
+            customer_id: string;
+            /** @description This obligation's share of the customer's transfer (2dp string). */
+            amount: string;
+            /** Format: date-time */
+            voided_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        RefundBatchList: {
+            batches: components["schemas"]["RefundBatch"][];
+            /**
+             * Format: int64
+             * @description Total batches matching
+             */
+            total: number;
+        };
+        RefundBatchDetail: components["schemas"]["RefundBatch"] & {
+            items: components["schemas"]["RefundBatchItem"][];
+        };
+        SetRefundBatchStatusRequest: {
+            /**
+             * @description The step to record. `voided` is refused here (400) — voiding must also un-mark every item,
+             *     return its source row to `pending`, and carry a reason, so it has its own endpoint;
+             *     `generated` is only ever the initial state.
+             * @enum {string}
+             */
+            status: "uploaded" | "confirmed" | "rejected";
+            /** @description Free text kept with the change (e.g. the bank's rejection message). */
+            note?: string | null;
+        };
+        VoidRefundBatchRequest: {
+            /** @description Why the batch is being voided. Must be non-blank — the void returns every obligation in it to the refundable queue. */
+            reason: string;
+        };
+        VoidRefundBatchItemsRequest: {
+            /**
+             * @description The obligations whose credit lines the bank could not deliver. Every one must belong to
+             *     THIS batch (else 404) and still be live (else 409); exact duplicates are collapsed. An
+             *     empty list is a 400 — it must never be read as "all of them", which is the whole-batch void.
+             */
+            sources: components["schemas"]["RefundSourceRef"][];
+            /** @description Why these obligations are going back in the queue (e.g. the bank's rejection message). Non-blank. */
+            reason: string;
         };
         /**
          * @description Optional narrowing of the export run. Omit the body entirely (or leave every field null) to
@@ -665,6 +2016,14 @@ export interface components {
              * @description Inclusive last day jobs were finished (Thai local day).
              */
             to?: string | null;
+            /**
+             * Format: date
+             * @description The batch's effective/value date. Omit for today in Asia/Bangkok rolled forward off a
+             *     weekend; set it to schedule a later settlement day or to step over a Thai public holiday
+             *     (the platform has no holiday calendar). A PAST date is a 400 — SCB rejects a back-dated
+             *     batch outright.
+             */
+            value_date?: string | null;
         };
         PreviewRecipient: {
             /**
@@ -690,10 +2049,114 @@ export interface components {
         ExcludedGuard: {
             /** Format: uuid */
             guard_id: string;
-            /** @description Why the guard cannot be paid this batch (missing name / tax id / proxy). */
+            /**
+             * @description Thai copy explaining why this guard cannot be paid in this batch — no profile row, no
+             *     name, no usable PromptPay proxy, no tax id/address for the ภ.ง.ด. certificate, or a total
+             *     transfer outside SCB's per-transaction bounds (the reason names the bound). The guard's
+             *     jobs stay unpaid in the backlog; nothing is marked paid.
+             */
             reason: string;
             /** Format: int64 */
             job_count: number;
+        };
+        /**
+         * @description One generated SCB payout file — the header only (the file text is its own endpoint). The
+         *     lifecycle is `generated → uploaded → confirmed | rejected`, with
+         *     `generated`/`uploaded`/`rejected` also able to go to `voided`; `confirmed` and `voided` are
+         *     TERMINAL.
+         */
+        PayoutBatch: {
+            /** Format: uuid */
+            id: string;
+            /** @description HEADER field 1 = batch_ref || product code (e.g. `050926120000PPY`). NOT the download filename. */
+            file_ref: string;
+            system_ref: string;
+            /** @description BCHDET field 1 — the bare 12-digit DDMMYYHHMMSS Bangkok stamp. */
+            batch_ref: string;
+            /** Format: date */
+            value_date: string;
+            /** @description Σ net transfers the file debits (2dp string). */
+            total_amount: string;
+            /** @description How many GUARDS the file pays (= TXNDET lines) — NOT how many bookings; a guard with three finished jobs is one recipient. */
+            recipient_count: number;
+            /** @enum {string} */
+            status: "generated" | "uploaded" | "confirmed" | "rejected" | "voided";
+            /** @description Free text kept with the latest status change (typically the bank's own message). */
+            status_note?: string | null;
+            void_reason?: string | null;
+            /** @description Whether the file text is stored and can be re-downloaded (false for batches generated before the text was kept). */
+            has_file: boolean;
+            /** Format: uuid */
+            created_by?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            uploaded_at?: string | null;
+            /** Format: date-time */
+            confirmed_at?: string | null;
+            /** Format: date-time */
+            rejected_at?: string | null;
+            /** Format: date-time */
+            voided_at?: string | null;
+            /** Format: uuid */
+            voided_by?: string | null;
+        };
+        /**
+         * @description One booking PAID by this batch (the paid-marker). `voided_at` set = the batch was voided and
+         *     this booking is back in the payable backlog; the row is kept as history rather than deleted.
+         */
+        PayoutBatchItem: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            booking_id: string;
+            /** Format: uuid */
+            guard_id: string;
+            /** @description base_fee × actual_hours − commission (2dp string). */
+            income: string;
+            /** @description Withholding tax for this booking (2dp string). */
+            wht: string;
+            /** @description income − wht (2dp string). */
+            transfer_amount: string;
+            /** Format: date-time */
+            voided_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+        };
+        PayoutBatchList: {
+            batches: components["schemas"]["PayoutBatch"][];
+            /**
+             * Format: int64
+             * @description Total batches matching
+             */
+            total: number;
+        };
+        PayoutBatchDetail: components["schemas"]["PayoutBatch"] & {
+            items: components["schemas"]["PayoutBatchItem"][];
+        };
+        SetPayoutBatchStatusRequest: {
+            /**
+             * @description The step to record. `voided` is refused here (400) — voiding must also un-mark every item
+             *     and carry a reason, so it has its own endpoint; `generated` is only ever the initial state.
+             * @enum {string}
+             */
+            status: "uploaded" | "confirmed" | "rejected";
+            /** @description Free text kept with the change (e.g. the bank's rejection message). */
+            note?: string | null;
+        };
+        VoidPayoutBatchRequest: {
+            /** @description Why the batch is being voided. Must be non-blank — the void returns every booking in it to the payable backlog. */
+            reason: string;
+        };
+        VoidPayoutBatchItemsRequest: {
+            /**
+             * @description The bookings whose credit lines the bank could not deliver. Every one must belong to THIS
+             *     batch (else 404) and still be live (else 409); duplicates are collapsed. An empty list is
+             *     a 400 — it must never be read as "all of them", which is the whole-batch void.
+             */
+            booking_ids: string[];
+            /** @description Why these lines are going back in the queue (e.g. the bank's rejection message). Non-blank. */
+            reason: string;
         };
         PayoutPreview: {
             recipients: components["schemas"]["PreviewRecipient"][];
@@ -918,6 +2381,290 @@ export interface operations {
             403: components["responses"]["Forbidden"];
         };
     };
+    previewRefunds: {
+        parameters: {
+            query?: {
+                /** @description Inclusive first day the refund became owed (Thai local day, `YYYY-MM-DD`). */
+                from?: string;
+                /** @description Inclusive last day the refund became owed (Thai local day, `YYYY-MM-DD`). */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The aggregated preview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["RefundPreview"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    exportRefunds: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ExportRefundRequest"];
+            };
+        };
+        responses: {
+            /** @description The SCB upload file (pipe-delimited text) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description An obligation was already exported (`REFUND_ALREADY_EXPORTED`), another export in EITHER stream took the same batch reference this second (`REFUND_BATCH_REF_TAKEN`), or a source row changed mid-run (`REFUND_QUEUE_CHANGED`) — nothing was marked processed, retry. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    listRefundBatches: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of the refund history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["RefundBatchList"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getRefundBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The batch + its items */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["RefundBatchDetail"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    downloadRefundBatchFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stored SCB upload file (pipe-delimited text) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description No such batch, or the batch has no stored file. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    setRefundBatchStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetRefundBatchStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated batch header */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["RefundBatch"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Illegal lifecycle step (`error.code` = `REFUND_BATCH_TERMINAL` / `REFUND_BATCH_ALREADY_VOIDED` / `REFUND_BATCH_TRANSITION`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    voidRefundBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoidRefundBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description The voided batch header */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["RefundBatch"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description The batch is already voided (`REFUND_BATCH_ALREADY_VOIDED`) or terminal (`REFUND_BATCH_TERMINAL`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    voidRefundBatchItems: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoidRefundBatchItemsRequest"];
+            };
+        };
+        responses: {
+            /** @description The batch + its items, with the named ones now carrying `voided_at` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["RefundBatchDetail"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description No such batch, or an obligation that is not part of it. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description One of the named obligations was already returned to the queue (`REFUND_ITEM_ALREADY_VOIDED`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     getPayoutConfig: {
         parameters: {
             query?: never;
@@ -1025,7 +2772,7 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
-            /** @description A job in the batch was already paid out by a concurrent export (`error.code = PAYOUT_ALREADY_PAID`). */
+            /** @description A job was already paid out by a concurrent export (`PAYOUT_ALREADY_PAID`), or another export in EITHER stream took the same batch reference this second (`PAYOUT_BATCH_REF_TAKEN`) — nothing was marked paid, retry. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -1034,6 +2781,562 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+        };
+    };
+    listPayoutBatches: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of the payout history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["PayoutBatchList"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getPayoutBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The batch + its items */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["PayoutBatchDetail"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    downloadPayoutBatchFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stored SCB upload file (pipe-delimited text) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description No such batch, or the batch has no stored file (generated before the text was kept). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    setPayoutBatchStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPayoutBatchStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated batch header */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["PayoutBatch"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Illegal lifecycle step (`error.code` = `PAYOUT_BATCH_TERMINAL` / `PAYOUT_BATCH_ALREADY_VOIDED` / `PAYOUT_BATCH_TRANSITION`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    voidPayoutBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoidPayoutBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description The voided batch header */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["PayoutBatch"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description The batch is already voided (`PAYOUT_BATCH_ALREADY_VOIDED`) or terminal (`PAYOUT_BATCH_TERMINAL`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    voidPayoutBatchItems: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoidPayoutBatchItemsRequest"];
+            };
+        };
+        responses: {
+            /** @description The batch + its items, with the named ones now carrying `voided_at` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["PayoutBatchDetail"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description No such batch, or a `booking_id` that is not part of it. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description One of the named bookings was already returned to the backlog (`PAYOUT_ITEM_ALREADY_VOIDED`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    previewDeductions: {
+        parameters: {
+            query?: {
+                /** @description Inclusive first day the job was settled (Thai local day, `YYYY-MM-DD`). */
+                from?: string;
+                /** @description Inclusive last day the job was settled (Thai local day, `YYYY-MM-DD`). */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The itemised cut */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["DeductionPreview"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    exportDeductions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ExportDeductionRequest"];
+            };
+        };
+        responses: {
+            /** @description The SCB upload file (pipe-delimited text) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description A job was already swept (`DEDUCTION_ALREADY_SWEPT`) or another export in ANY stream took the same batch reference this second (`DEDUCTION_BATCH_REF_TAKEN`) — nothing was marked swept, retry. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    listDeductionBatches: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of sweep files */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["DeductionBatchList"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getDeductionBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The batch + its ledger */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["DeductionBatchDetail"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    downloadDeductionBatchFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stored SCB file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    setDeductionBatchStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetDeductionBatchStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated batch header */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["DeductionBatch"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /**
+             * @description An illegal step. `error.code` is `DEDUCTION_BATCH_ALREADY_VOIDED` (the batch is already
+             *     cancelled and its jobs are already back in the backlog), `DEDUCTION_BATCH_TERMINAL` (a
+             *     confirmed/voided batch admits no further step) or `DEDUCTION_BATCH_TRANSITION`.
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    voidDeductionBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoidDeductionBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description The voided batch header */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["DeductionBatch"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Already voided (`DEDUCTION_BATCH_ALREADY_VOIDED`) or terminal (`DEDUCTION_BATCH_TERMINAL`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    voidDeductionBatchItems: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoidDeductionBatchItemsRequest"];
+            };
+        };
+        responses: {
+            /** @description The batch + its ledger, re-read after the release */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["DeductionBatchDetail"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /**
+             * @description The batch is `confirmed`, so its single credit line already moved the whole summed amount
+             *     and no job may be released from it (`DEDUCTION_BATCH_CONFIRMED`); or a named job was
+             *     already released (`DEDUCTION_ITEM_ALREADY_VOIDED`).
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    vatRegisterReport: {
+        parameters: {
+            query: {
+                /** @description The filing period, `YYYY-MM` (Thai calendar month). Required — a defaulted period on a tax report is a filing for the wrong month. */
+                month: string;
+                /** @description `csv` for the spreadsheet; omitted or anything else returns JSON. */
+                format?: "csv";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The register (JSON), or the CSV download when `format=csv` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["VatRegisterReport"];
+                    };
+                    "text/csv": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    whtPayeeReport: {
+        parameters: {
+            query: {
+                /** @description The filing period, `YYYY-MM` (Thai calendar month). */
+                month: string;
+                /** @description `csv` for the spreadsheet; omitted or anything else returns JSON. */
+                format?: "csv";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The payee list (JSON), or the CSV download when `format=csv` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["WhtPayeeReport"];
+                    };
+                    "text/csv": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     adminRevenueReport: {

@@ -394,7 +394,7 @@ function AlertsList({
     label: string;
     sub: string;
     count: number;
-    href: "/operations" | "/wallet" | "/applicants";
+    href: "/operations" | "/refunds" | "/applicants";
     tone: "red" | "amber" | "blue";
   }[] = [];
   if (overdueCheckins != null && overdueCheckins > 0) {
@@ -415,7 +415,11 @@ function AlertsList({
       label: c.alertRefunds(refundQueue),
       sub: c.alertRefundsSub,
       count: refundQueue,
-      href: "/wallet",
+      // `/refunds`, not `/wallet`: an alert that says work is waiting must land on the screen that
+      // DOES the work. Wallet only reports the same rows. (The count itself is lane A only — the
+      // queue endpoint has never listed duplicate-transfer slips — so it can UNDER-state what the
+      // refund screen will offer, never over-state it.)
+      href: "/refunds",
       tone: "amber",
     });
   }

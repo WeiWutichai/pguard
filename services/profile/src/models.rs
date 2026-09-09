@@ -251,6 +251,25 @@ pub struct UpsertCustomerProfileRequest {
     pub contact_phone: Option<String>,
 }
 
+/// `PUT /admin/guard-profiles/{user_id}/payout` body — the ADMIN correction form for the fields a
+/// guard payout needs but the guard's own registration never captured: the national/tax id (the
+/// PromptPay NAT proxy + the ภ.ง.ด. recipient TIN) and the bank block.
+///
+/// Every field is OPTIONAL and MERGE-semantic: an absent — or explicitly `null` — key leaves the
+/// stored value UNCHANGED (the same convention payment's `PUT /admin/payouts/config` uses), so an
+/// operator filling in only the tax id cannot blank out bank details they never saw. There is
+/// deliberately no way to CLEAR a field here; that belongs to the guard's own `PUT /profile/guard`.
+#[derive(Debug, Default, Deserialize)]
+pub struct UpdateGuardPayoutRequest {
+    /// Thai national/tax id (13 digits) — validated leniently (8–20 digits, spaces/hyphens
+    /// allowed), and rejected if it still carries the read-time mask.
+    pub tax_id: Option<String>,
+    pub bank_name: Option<String>,
+    /// Rejected if it still carries the read-time mask (a re-PUT of what the admin UI displayed).
+    pub account_number: Option<String>,
+    pub account_name: Option<String>,
+}
+
 /// Optional reason carried on an admin rejection (stored is a follow-up; for now it is
 /// logged + echoed so the reviewer can supply context).
 #[derive(Debug, Default, Deserialize)]
@@ -616,22 +635,69 @@ pub struct GuardPayoutProfile {
     /// FULL (unmasked) 13-digit Thai TIN — `null` when the guard has none on file.
     pub tax_id: Option<String>,
     pub address: Option<String>,
-    /// The guard's own phone for a PromptPay MOB fallback proxy. Always `null` for now — the
-    /// guard's number lives on `identity.users`, not the profile (only `emergency_contact_phone`
-    /// is here, which is someone else's). Resolving it from identity is a tracked follow-up; until
-    /// then the proxy is the tax id (NAT), so a guard with no tax id is excluded from the batch.
+    /// The guard's LOGIN phone, resolved from identity — the PromptPay **MOB** fallback proxy when
+    /// the guard has no tax id on file. A Thai login number is 10 digits, which is exactly what the
+    /// SCB toolkit stamps as `MOB` (`CPX_Toolkit_Reverse_Engineering.md`:2055 — PPY proxy by
+    /// length: 15→`EWL`, 13→`NAT`, 10→`MOB`).
+    ///
+    /// Best-effort, exactly like every other identity read here: an identity outage returns `null`
+    /// rather than failing the payout read. Payment then excludes that ONE guard with a reason,
+    /// which is the safe outcome — never a whole batch that fails or a stranger who gets paid.
+    /// Note this is NOT `emergency_contact_phone` (someone else's number; must never be paid to).
     pub phone: Option<String>,
 }
 
 /// Raw guard payout row read from `profile.guard_profiles`: full_name + FULL tax_id + address. The
-/// guard's OWN phone is NOT on the profile (only `emergency_contact_phone`, which is someone else's
-/// number and must never be paid to) — it lives on `identity.users`. The PromptPay proxy therefore
-/// uses the tax id (`NAT`); a phone (`MOB`) fallback would need an identity read (tracked follow-up).
+/// guard's OWN phone is deliberately NOT here — it lives on `identity.users` (profile stores only
+/// `emergency_contact_phone`, which is someone else's number and must never be paid to), so the
+/// handler resolves it over the identity client and merges it into [`GuardPayoutProfile::phone`].
 #[derive(Debug, sqlx::FromRow)]
 pub struct GuardPayoutRow {
     pub full_name: Option<String>,
     pub tax_id: Option<String>,
     pub address: Option<String>,
+}
+
+/// The customer PII the payment aggregator needs to build ONE **refund** recipient — stream ①
+/// ยอดที่ต้องโอนคืนคนจ้าง (`GET /internal/customers/{user_id}/payout-profile`, service-JWT only).
+///
+/// Deliberately NARROWER than [`GuardPayoutProfile`]: a refund goes back to the customer over
+/// PromptPay **MOB** (the 10-digit phone proxy — `CPX_Toolkit_Reverse_Engineering.md`:2055, PPY
+/// proxy by length: 15→`EWL`, 13→`NAT`, 10→`MOB`), so there is no `tax_id` here at all. A refund
+/// is the customer's own money coming back, not income: no withholding, therefore no TIN, therefore
+/// no reason for this endpoint to be able to leak one. Per the locked product decision, the
+/// destination is whatever registration ALREADY captured — no new PII is collected for refunds.
+///
+/// `full_name` / `address` are `Option` because those columns are nullable; payment decides what a
+/// missing name means for its own file (the SCB recipient-name column), exactly as it does for the
+/// guard batch. A `phone` of `null` means UNREFUNDABLE — payment excludes that ONE customer from
+/// the batch with a reason rather than transferring money to a blank.
+#[derive(Debug, Serialize)]
+pub struct CustomerPayoutProfile {
+    pub full_name: Option<String>,
+    /// The PromptPay **MOB** proxy: `customer_profiles.contact_phone` when the customer set one,
+    /// else the account's LOGIN phone resolved from identity. Returned RAW (exactly as stored) —
+    /// payment owns normalisation and applies its `digits_only` at the writer boundary, the same
+    /// contract as [`GuardPayoutProfile::phone`]; two internal endpoints disagreeing on who
+    /// normalises is how a proxy silently changes length (and therefore proxy TYPE) between streams.
+    ///
+    /// Best-effort, like every identity read here: an identity outage degrades this to whatever the
+    /// profile row holds (possibly `null`) and the read still returns 200.
+    pub phone: Option<String>,
+    pub address: Option<String>,
+}
+
+/// Raw customer refund row read from `profile.customer_profiles`: name + address + the customer's
+/// chosen `contact_phone` (migration 0006). The account's LOGIN phone is deliberately NOT here — it
+/// lives on `identity.users` (profile does not, and must not, store it), so the handler resolves it
+/// over the identity client only when `contact_phone` is blank.
+#[derive(Debug, sqlx::FromRow)]
+pub struct CustomerPayoutRow {
+    pub full_name: Option<String>,
+    pub address: Option<String>,
+    /// Nullable since migration 0006 added it — and `Some("")` is just as blank as `None` for a
+    /// PromptPay proxy, so the handler treats both as "fall back to identity".
+    pub contact_phone: Option<String>,
 }
 
 /// The company (WHT payer) block the payment aggregator stamps onto the SCB file + ภ.ง.ด.53 header

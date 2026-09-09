@@ -12,14 +12,14 @@ part 'excluded_guard.g.dart';
 ///
 /// Properties:
 /// * [guardId] 
-/// * [reason] - Why the guard cannot be paid this batch (missing name / tax id / proxy).
+/// * [reason] - Thai copy explaining why this guard cannot be paid in this batch — no profile row, no name, no usable PromptPay proxy, no tax id/address for the ภ.ง.ด. certificate, or a total transfer outside SCB's per-transaction bounds (the reason names the bound). The guard's jobs stay unpaid in the backlog; nothing is marked paid. 
 /// * [jobCount] 
 @BuiltValue()
 abstract class ExcludedGuard implements Built<ExcludedGuard, ExcludedGuardBuilder> {
   @BuiltValueField(wireName: r'guard_id')
   String get guardId;
 
-  /// Why the guard cannot be paid this batch (missing name / tax id / proxy).
+  /// Thai copy explaining why this guard cannot be paid in this batch — no profile row, no name, no usable PromptPay proxy, no tax id/address for the ภ.ง.ด. certificate, or a total transfer outside SCB's per-transaction bounds (the reason names the bound). The guard's jobs stay unpaid in the backlog; nothing is marked paid. 
   @BuiltValueField(wireName: r'reason')
   String get reason;
 

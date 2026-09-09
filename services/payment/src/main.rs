@@ -208,6 +208,47 @@ async fn main() -> anyhow::Result<()> {
             "/admin/refunds/queue",
             get(api::admin_refund_queue::<AppState>),
         )
+        // CUSTOMER REFUNDS (stream ① ยอดที่ต้องโอนคืนกับคนจ้าง — the SCB refund file): preview the
+        // backlog, generate the upload file that actually SENDS the money, then the same lifecycle
+        // the payout has (history · re-download · bank status · void · per-item void). Admin-role
+        // gated in the handlers. All under the EXISTING `/admin/refunds` gateway prefix rule (a
+        // plain prefix match, so these subpaths need no new rule and no new env — the two times this
+        // feature broke, it was a missing gateway rule).
+        .route(
+            "/admin/refunds/preview",
+            get(api::refunds::preview::<AppState>),
+        )
+        .route(
+            "/admin/refunds/export",
+            post(api::refunds::export::<AppState>),
+        )
+        .route(
+            "/admin/refunds/batches",
+            get(api::refunds::list_batches::<AppState>),
+        )
+        .route(
+            "/admin/refunds/batches/{id}",
+            get(api::refunds::get_batch::<AppState>),
+        )
+        .route(
+            "/admin/refunds/batches/{id}/file",
+            get(api::refunds::get_batch_file::<AppState>),
+        )
+        .route(
+            "/admin/refunds/batches/{id}/status",
+            post(api::refunds::set_batch_status::<AppState>),
+        )
+        .route(
+            "/admin/refunds/batches/{id}/void",
+            post(api::refunds::void_batch::<AppState>),
+        )
+        // …and the PER-ITEM escape hatch: SCB can accept a file and still fail individual credit
+        // lines, so a few obligations go back in the queue while the rest stay settled. Works on a
+        // `confirmed` batch by design (that is when the bank tells you which lines bounced).
+        .route(
+            "/admin/refunds/batches/{id}/items/void",
+            post(api::refunds::void_batch_items::<AppState>),
+        )
         // Guard-payout (SCB Business Net export): config + preview + generate the upload file.
         // Admin-role gated in the handlers. Needs a NEW gateway `/admin/payouts` prefix rule → Payment.
         .route(
@@ -222,14 +263,109 @@ async fn main() -> anyhow::Result<()> {
             "/admin/payouts/export",
             post(api::payouts::export::<AppState>),
         )
+        // Payout-batch LIFECYCLE — history, re-download of the STORED file, bank status, and the
+        // void that returns a batch's bookings to the payable backlog. All under the SAME
+        // `/admin/payouts` gateway prefix rule (a plain prefix match, so subpaths need no new rule
+        // and no new env). Admin-role gated in the handlers.
+        .route(
+            "/admin/payouts/batches",
+            get(api::payouts::list_batches::<AppState>),
+        )
+        .route(
+            "/admin/payouts/batches/{id}",
+            get(api::payouts::get_batch::<AppState>),
+        )
+        .route(
+            "/admin/payouts/batches/{id}/file",
+            get(api::payouts::get_batch_file::<AppState>),
+        )
+        .route(
+            "/admin/payouts/batches/{id}/status",
+            post(api::payouts::set_batch_status::<AppState>),
+        )
+        .route(
+            "/admin/payouts/batches/{id}/void",
+            post(api::payouts::void_batch::<AppState>),
+        )
+        // …and the PER-ITEM escape hatch: SCB can accept a file and still fail individual credit
+        // lines, so a few guards go back to the payable backlog while the rest stay paid. Works on a
+        // `confirmed` batch by design (that is when the bank tells you which lines bounced), which
+        // is why it is an item-level route rather than another batch status.
+        .route(
+            "/admin/payouts/batches/{id}/items/void",
+            post(api::payouts::void_batch_items::<AppState>),
+        )
+        // PLATFORM CUT (stream ② ยอดที่โดนหักเข้าระบบ — the SCB `OAT` sweep into the company revenue
+        // account): preview the itemised cut, generate the upload file that actually MOVES it, then
+        // the same lifecycle the other two streams have (history · re-download · bank status · void ·
+        // per-item void). Admin-role gated in the handlers. `/admin/deductions` is a NEW top-level
+        // admin prefix and needs its OWN gateway rule → Payment (a missing rule has broken this
+        // feature twice: the subpaths below then ride that one prefix match, no extra rules needed).
+        //
+        // The file carries the platform's cut ONLY — never VAT and never the WHT withheld from
+        // guards, which are the Revenue Department's money and are remitted by e-filing through the
+        // two report endpoints further down.
+        .route(
+            "/admin/deductions/preview",
+            get(api::deductions::preview::<AppState>),
+        )
+        .route(
+            "/admin/deductions/export",
+            post(api::deductions::export::<AppState>),
+        )
+        .route(
+            "/admin/deductions/batches",
+            get(api::deductions::list_batches::<AppState>),
+        )
+        .route(
+            "/admin/deductions/batches/{id}",
+            get(api::deductions::get_batch::<AppState>),
+        )
+        .route(
+            "/admin/deductions/batches/{id}/file",
+            get(api::deductions::get_batch_file::<AppState>),
+        )
+        .route(
+            "/admin/deductions/batches/{id}/status",
+            post(api::deductions::set_batch_status::<AppState>),
+        )
+        .route(
+            "/admin/deductions/batches/{id}/void",
+            post(api::deductions::void_batch::<AppState>),
+        )
+        // …and the PER-ITEM escape hatch. Unlike the other two streams this is not about a failed
+        // credit line (an OAT file has ONE line) but about a job that should never have been
+        // collected — and it is REFUSED once the bank has CONFIRMED the file (409
+        // `DEDUCTION_BATCH_CONFIRMED`), the exact opposite of the two routes above. One credit line
+        // for the whole batch means `confirmed` moved the entire summed amount into the revenue
+        // account, so releasing a job would return its cut to the backlog and the next sweep would
+        // move it a SECOND time. The remedies are a whole-batch void or an accounting adjustment.
+        .route(
+            "/admin/deductions/batches/{id}/items/void",
+            post(api::deductions::void_batch_items::<AppState>),
+        )
+        // The two TAX REPORTS that back a FILING rather than a transfer file: the output-VAT register
+        // (ภ.พ.30) and the ภ.ง.ด.3/53 payee list — the latter being the first reader `payout_batch_items.wht`
+        // has ever had. Both serve `?format=csv` (server-rendered, BOM'd). Each needs its OWN gateway
+        // prefix rule → Payment: there is no bare `/admin/reports` rule, and booking owns
+        // `/admin/reports/bookings`.
+        .route(
+            "/admin/reports/vat-register",
+            get(api::reports::vat_register::<AppState>),
+        )
+        .route(
+            "/admin/reports/wht-payees",
+            get(api::reports::wht_payees::<AppState>),
+        )
         // Admin revenue-trend report (analytics). Needs a NEW gateway `/admin/reports/revenue`
         // prefix rule → Payment (booking owns `/admin/reports/bookings`).
         .route(
             "/admin/reports/revenue",
             get(api::admin_revenue_report::<AppState>),
         )
-        // Admin per-customer lifetime-spend report (web-admin customers page). Served under the
-        // same gateway `/admin/reports/` prefix rule → Payment.
+        // Admin per-customer lifetime-spend report (web-admin customers page). Needs its OWN
+        // gateway `/admin/reports/customer-spend` prefix rule → Payment: there is no bare
+        // `/admin/reports` rule to ride, and booking owns `/admin/reports/customer-bookings`.
         .route(
             "/admin/reports/customer-spend",
             get(api::admin_customer_spend_report::<AppState>),

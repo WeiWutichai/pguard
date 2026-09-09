@@ -21,18 +21,19 @@ use shared::models::{ApiResponse, ApprovalStatus};
 use shared::service_jwt::ServiceCaller;
 
 use crate::domain::documents;
-use crate::domain::mask::mask_account_number;
+use crate::domain::mask::{self, mask_account_number};
 use crate::domain::validate;
 use crate::identity_client::IdentityResolver;
 use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, AdminListSupportTicketsQuery,
-    CreateSupportTicketRequest, CustomerAvatarResponse, CustomerProfileAdminResponse,
-    CustomerProfileResponse, ExpiringDocumentsResponse, GuardAvatarResponse, GuardDocumentExpiry,
-    GuardDocumentPresence, GuardDocumentResponse, GuardPayoutProfile, GuardProfileAdminResponse,
-    GuardProfileResponse, GuardProfileSubmitResponse, InternalGuard, InternalOrgSettings,
-    MyProfile, OrgSettingsResponse, PublicCustomerProfile, PublicGuardProfile, RecipientsQuery,
-    RecipientsResponse, RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName,
-    SetDocumentExpiryRequest, StageRequest, SupportTicket, UpdateOrgSettingsRequest,
+    CreateSupportTicketRequest, CustomerAvatarResponse, CustomerPayoutProfile,
+    CustomerProfileAdminResponse, CustomerProfileResponse, ExpiringDocumentsResponse,
+    GuardAvatarResponse, GuardDocumentExpiry, GuardDocumentPresence, GuardDocumentResponse,
+    GuardPayoutProfile, GuardProfileAdminResponse, GuardProfileResponse,
+    GuardProfileSubmitResponse, InternalGuard, InternalOrgSettings, MyProfile, OrgSettingsResponse,
+    PublicCustomerProfile, PublicGuardProfile, RecipientsQuery, RecipientsResponse,
+    RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName, SetDocumentExpiryRequest,
+    StageRequest, SupportTicket, UpdateGuardPayoutRequest, UpdateOrgSettingsRequest,
     UpsertCustomerProfileRequest, UpsertGuardProfileRequest, WithLoginPhone,
     EXPIRING_DOCUMENT_TYPES, MAX_SUPPORT_TICKET_MESSAGE_LEN, RESOLVE_NAMES_LIMIT,
     SUPPORT_TICKET_KINDS,
@@ -224,6 +225,23 @@ where
     }
 }
 
+/// The two PDPA-masked fields' write-back rejections. Spelled out per field (rather than a
+/// generic message) so the operator is told exactly which value to re-type.
+const MASKED_ACCOUNT_NUMBER_MSG: &str =
+    "account_number looks masked — resend the full bank account number";
+const MASKED_TAX_ID_MSG: &str = "tax_id looks masked — resend the full national/tax id";
+
+/// Reject a write whose value is still the MASK the caller read back (see
+/// [`crate::domain::mask::looks_masked`]). `account_number` and `tax_id` both come back masked on
+/// owner reads, so a client that round-trips the whole profile object would otherwise persist
+/// `"******7890"` as the real value — quietly making the guard unpayable.
+fn reject_masked_write(value: Option<&str>, message: &str) -> Result<(), AppError> {
+    if mask::looks_masked(value) {
+        return Err(AppError::BadRequest(message.to_string()));
+    }
+    Ok(())
+}
+
 /// Apply the shared field validators to a guard-profile write. Maps the pure validators'
 /// `String` errors to `BadRequest`.
 fn validate_guard_req(req: &UpsertGuardProfileRequest) -> Result<(), AppError> {
@@ -260,15 +278,15 @@ fn validate_guard_req(req: &UpsertGuardProfileRequest) -> Result<(), AppError> {
     // PUTs the whole object back would persist the masked string as the real account number. Reject
     // any write whose account_number still carries mask characters — the masked value is never a
     // valid account number, so this can only be an unintended round-trip.
-    if req
-        .account_number
-        .as_deref()
-        .is_some_and(|a| a.contains('*'))
-    {
-        return Err(AppError::BadRequest(
-            "account_number looks masked — resend the full bank account number".to_string(),
-        ));
-    }
+    reject_masked_write(req.account_number.as_deref(), MASKED_ACCOUNT_NUMBER_MSG)?;
+    // tax_id was validated NOWHERE on the guard path until now, even though it is the single field
+    // that decides whether a guard can be paid at all (PromptPay NAT proxy + ภ.ง.ด. recipient TIN).
+    // The GUARD-scoped validator, not the lenient `validate_tax_id` the org screen uses: here the
+    // value is the account money is SENT to, so a shape-perfect but mistyped 13-digit id must not
+    // survive. Plus the same masked-round-trip guard as account_number, since `mask_guard_response`
+    // masks tax_id too.
+    validate::validate_guard_tax_id(req.tax_id.as_deref()).map_err(AppError::BadRequest)?;
+    reject_masked_write(req.tax_id.as_deref(), MASKED_TAX_ID_MSG)?;
     // v1-parity registration fields.
     for (val, field) in [
         (req.full_name.as_deref(), "full_name"),
@@ -1263,9 +1281,15 @@ pub async fn get_org_settings<S: ProfileDeps>(
 }
 
 /// PUT `/admin/org-settings` — set/replace the org (company) profile. Admin only (else 403).
-/// Validates a lenient `tax_id` (8–20 digits, separators allowed — not a checksum) + bounded
-/// lengths for company_name/address, then upserts the single row (records the acting admin in
-/// `updated_by`). Returns the stored row for read-back. Write → primary.
+/// Validates a lenient `tax_id` (8–20 digits, separators allowed — **shape only, no checksum**) +
+/// bounded lengths for company_name/address, then upserts the single row (records the acting admin
+/// in `updated_by`). Returns the stored row for read-back. Write → primary.
+///
+/// The lenient rule here is deliberate and must stay: this is a JURISTIC-PERSON TIN, not a citizen
+/// id, so [`validate::validate_guard_tax_id`]'s mod-11 check has no authority over it — and since
+/// the web-admin form re-sends whatever it loaded, enforcing it would make an install with a
+/// non-conforming stored TIN unable to save the company profile at all, which blocks the payout
+/// export (it 400s without a company tax id). Nothing is ever transferred TO this number.
 #[tracing::instrument(skip(state, req), fields(user = %user.user_id))]
 pub async fn admin_update_org_settings<S: ProfileDeps>(
     State(state): State<S>,
@@ -1488,10 +1512,22 @@ pub async fn internal_pending_roles<S: ProfileInternalDeps>(
 // ----- GET /internal/guards/{id}/payout-profile (service-JWT — guard payout PII) -----
 
 /// The guard PII the payment aggregator needs to build ONE SCB payout recipient: name + FULL
-/// (unmasked) tax id + address + contact phone. This is the ONLY surface that returns `tax_id` in
-/// the clear (every owner/admin profile read masks it), so it is `ServiceCaller`-gated and never
-/// reachable from the public edge. 404 when there is no guard profile for the id (payment then
-/// excludes that guard from the batch with a warning rather than paying a stranger).
+/// (unmasked) tax id + address + the guard's own phone. This is the ONLY surface that returns
+/// `tax_id` in the clear (every owner/admin profile read masks it), so it is `ServiceCaller`-gated
+/// and never reachable from the public edge. 404 when there is no guard profile for the id (payment
+/// then excludes that guard from the batch with a warning rather than paying a stranger).
+///
+/// The phone is resolved from identity, NOT the profile: `identity.users.phone` is the number the
+/// account logs in with, and a Thai login number is 10 digits — exactly the length the SCB toolkit
+/// stamps as the PromptPay `MOB` proxy (`CPX_Toolkit_Reverse_Engineering.md`:2055 — 15→`EWL`,
+/// 13→`NAT`, 10→`MOB`). It is the fallback payment's `resolve_proxy` reaches for when a guard has
+/// no tax id; hard-coding `None` here made that whole branch dead code and left such a guard
+/// completely unpayable. Profile's own `emergency_contact_phone` is someone ELSE's number and must
+/// never be paid to, so it is deliberately not used.
+///
+/// Best-effort, per the resolver's documented contract: an identity outage yields `phone: null`
+/// and this read still returns 200. Payment then excludes that ONE guard with a reason — the safe
+/// outcome — instead of the whole payout batch failing on an unrelated service being down.
 #[tracing::instrument(skip(state), fields(caller = %caller.service, guard = %guard_id))]
 pub async fn internal_guard_payout_profile<S: ProfileInternalDeps>(
     State(state): State<S>,
@@ -1501,13 +1537,87 @@ pub async fn internal_guard_payout_profile<S: ProfileInternalDeps>(
     let row = repo::guard_payout_row(state.db_read(), guard_id)
         .await?
         .ok_or_else(|| AppError::NotFound("Guard not found".to_string()))?;
+    let phone = state
+        .identity_resolver()
+        .resolve(std::slice::from_ref(&guard_id))
+        .await
+        .remove(&guard_id)
+        .and_then(|n| n.phone);
+    if phone.is_none() {
+        // Observable, because it silently costs the guard their MOB fallback: either identity is
+        // down/degraded or it answered without the field (older build mid-rollout). Never the
+        // phone itself — that is PII.
+        tracing::warn!(guard = %guard_id, "payout profile: no login phone from identity (MOB fallback unavailable)");
+    }
     Ok(Json(ApiResponse::success(GuardPayoutProfile {
         full_name: row.full_name,
         tax_id: row.tax_id,
         address: row.address,
-        // The guard's own phone lives on identity.users, not the profile — left null here; the
-        // PromptPay proxy uses the tax id (NAT). A MOB fallback via identity is a tracked follow-up.
-        phone: None,
+        phone,
+    })))
+}
+
+// ----- GET /internal/customers/{id}/payout-profile (service-JWT — customer REFUND destination) ---
+
+/// The customer PII the payment aggregator needs to build ONE recipient for stream ①
+/// (ยอดที่ต้องโอนคืนคนจ้าง — the refund SCB file): name + PromptPay phone + address.
+/// `ServiceCaller`-gated and never reachable from the public edge, exactly like the guard payout
+/// read above. 404 when there is no customer profile row (payment then excludes that customer from
+/// the batch with a reason rather than transferring money to a blank).
+///
+/// Per the locked product decision the destination is whatever REGISTRATION already captured — no
+/// new PII is collected for refunds, and no `tax_id` is returned at all: a refund is the customer's
+/// own money coming back, so there is no withholding and nothing here that could leak a TIN.
+///
+/// **Why `contact_phone` wins over the login phone:** it is the number the customer deliberately
+/// chose to be contacted on, and the refund notification should land in the same place the money
+/// does — a refund that arrives at a number the customer no longer watches is a support ticket.
+/// The login phone (`identity.users.phone`, `NOT NULL` over there) is the GUARANTEED-PRESENT
+/// fallback: `contact_phone` is optional and nullable (migration 0006), so it is the better
+/// destination when set and no destination at all when blank. Either way a Thai number is 10
+/// digits — the length the SCB toolkit stamps as the PromptPay `MOB` proxy
+/// (`CPX_Toolkit_Reverse_Engineering.md`:2055 — 15→`EWL`, 13→`NAT`, 10→`MOB`).
+///
+/// The identity hop is only made when `contact_phone` is blank — no round-trip bought for a
+/// customer who already has a destination. Best-effort, per the resolver's documented contract: an
+/// identity outage degrades `phone` to whatever the profile row holds (possibly `null`) and this
+/// read still returns 200. Payment then excludes that ONE customer with a reason — the safe
+/// outcome — instead of the whole refund batch failing on an unrelated service being down.
+///
+/// The value is returned RAW, exactly as stored: payment owns normalisation (`digits_only` at its
+/// writer boundary), the same contract as the guard endpoint. Two internal reads disagreeing on who
+/// normalises is how a proxy silently changes length — and therefore proxy TYPE — between streams.
+#[tracing::instrument(skip(state), fields(caller = %caller.service, customer = %user_id))]
+pub async fn internal_customer_payout_profile<S: ProfileInternalDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<CustomerPayoutProfile>>, AppError> {
+    let row = repo::customer_payout_row(state.db_read(), user_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Customer not found".to_string()))?;
+    // `Some("")` (or a stored run of spaces) is just as unpayable as `None`, so both fall through
+    // to identity rather than being handed to payment as a "destination".
+    let mut phone = row.contact_phone.filter(|p: &String| !p.trim().is_empty());
+    if phone.is_none() {
+        phone = state
+            .identity_resolver()
+            .resolve(std::slice::from_ref(&user_id))
+            .await
+            .remove(&user_id)
+            .and_then(|n| n.phone)
+            .filter(|p: &String| !p.trim().is_empty());
+    }
+    if phone.is_none() {
+        // Observable, because this customer is UNREFUNDABLE until someone fixes it: no
+        // `contact_phone` on the profile AND identity gave us nothing (down, degraded, or an older
+        // build mid-rollout that answers without the field). Never the phone itself — that is PII.
+        tracing::warn!(customer = %user_id, "customer payout profile: no phone resolved (refund destination unavailable)");
+    }
+    Ok(Json(ApiResponse::success(CustomerPayoutProfile {
+        full_name: row.full_name,
+        phone,
+        address: row.address,
     })))
 }
 
@@ -1702,6 +1812,68 @@ pub async fn admin_reject_guard<S: ProfileDeps>(
     let profile =
         repo::set_approval_status(state.db(), user_id, ApprovalStatus::Rejected, ROLE_GUARD)
             .await?;
+    Ok(Json(ApiResponse::success(profile)))
+}
+
+// ----- PUT /admin/guard-profiles/{user_id}/payout — admin payout-field correction -----
+
+/// Set a guard's PAYOUT fields — national/tax id + bank block. Admin only (else 403).
+///
+/// This exists because NOTHING could write a guard's `tax_id`: mobile registration never asks for
+/// it, and `PUT /profile/guard` dropped the column on the floor. Since the tax id is both the
+/// PromptPay NAT proxy and the ภ.ง.ด. recipient TIN, every guard failed payment's payability check
+/// and `POST /admin/payouts/export` returned 400 "ไม่มีรายการค้างจ่ายที่จ่ายได้ในขณะนี้" on every
+/// install. An operator holding a copy of the guard's ID card can now fill it in.
+///
+/// MERGE semantics: an absent (or `null`) field leaves the stored value UNCHANGED — the same
+/// convention as payment's `PUT /admin/payouts/config`, so typing in a tax id can never blank out
+/// bank details. 404 when that user has no guard profile. Returns the FULL (unmasked) profile:
+/// this is an admin surface, and an operator who cannot see what they just typed cannot verify it.
+///
+/// PDPA §30: the write is audited like every other admin surface that touches guard PII — this one
+/// WRITES the two most sensitive fields on the row, so "who set this national id" must be
+/// answerable. The audit row is written BEFORE the update, on the primary, and a failed audit
+/// fails the request (an unattributable PII write is not an acceptable outcome).
+#[tracing::instrument(skip(state, req), fields(admin = %user.user_id, target_user = %user_id))]
+pub async fn admin_update_guard_payout<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(user_id): Path<Uuid>,
+    Json(req): Json<UpdateGuardPayoutRequest>,
+) -> Result<Json<ApiResponse<GuardProfileResponse>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    // GUARD-scoped (checksummed) rule — this endpoint writes the PromptPay `NAT` proxy the payout
+    // file credits. The lenient `validate_tax_id` belongs to the COMPANY tax id only; see the two
+    // function doc comments in `domain::validate` for why the split must not be merged back.
+    validate::validate_guard_tax_id(req.tax_id.as_deref()).map_err(AppError::BadRequest)?;
+    reject_masked_write(req.tax_id.as_deref(), MASKED_TAX_ID_MSG)?;
+    validate::validate_text(
+        req.bank_name.as_deref(),
+        "bank_name",
+        validate::MAX_TEXT_LEN,
+    )
+    .map_err(AppError::BadRequest)?;
+    validate::validate_text(
+        req.account_name.as_deref(),
+        "account_name",
+        validate::MAX_TEXT_LEN,
+    )
+    .map_err(AppError::BadRequest)?;
+    validate::validate_text(
+        req.account_number.as_deref(),
+        "account_number",
+        validate::MAX_ACCOUNT_NUMBER_LEN,
+    )
+    .map_err(AppError::BadRequest)?;
+    reject_masked_write(req.account_number.as_deref(), MASKED_ACCOUNT_NUMBER_MSG)?;
+    repo::record_access(
+        state.db(),
+        user.user_id,
+        "admin_update_guard_payout",
+        Some(&user_id.to_string()),
+    )
+    .await?;
+    let profile = repo::update_guard_payout_fields(state.db(), user_id, &req).await?;
     Ok(Json(ApiResponse::success(profile)))
 }
 
@@ -1986,6 +2158,10 @@ mod tests {
                     post(admin_reject_guard::<TestDeps>),
                 )
                 .route(
+                    "/admin/guard-profiles/{user_id}/payout",
+                    put(admin_update_guard_payout::<TestDeps>),
+                )
+                .route(
                     "/admin/customer-profiles/{user_id}/approve",
                     post(admin_approve_customer::<TestDeps>),
                 )
@@ -2124,6 +2300,155 @@ mod tests {
         req.account_number = Some("1234567890".to_string());
         let r = validate_guard_req(&req);
         assert!(r.is_ok(), "real account number must pass: {r:?}");
+    }
+
+    #[test]
+    fn guard_tax_id_is_validated() {
+        // tax_id used to slip through `validate_guard_req` entirely — the one field that decides
+        // whether a guard can be paid at all (PromptPay NAT proxy + ภ.ง.ด. recipient TIN).
+        let mut req: UpsertGuardProfileRequest =
+            serde_json::from_value(serde_json::json!({ "gender": "male" })).unwrap();
+
+        // absent → OK (the field is optional across a multi-step onboarding).
+        assert!(validate_guard_req(&req).is_ok(), "absent tax_id must pass");
+
+        // a real 13-digit Thai TIN → OK, with or without the separators an operator types.
+        // NOTE: the old fixture here was "1234567890123", which fails the Thai national-id mod-11
+        // checksum `validate_guard_tax_id` enforces on 13-digit values (13 digits = the PromptPay
+        // NAT proxy money is SENT to). Replaced with a genuinely valid id — sum 352, 352 mod 11 = 0,
+        // (11−0) mod 10 = 1 = the last digit.
+        req.tax_id = Some("1234567890121".to_string());
+        let r = validate_guard_req(&req);
+        assert!(r.is_ok(), "valid 13-digit TIN must pass: {r:?}");
+        req.tax_id = Some("1-2345-67890-12-1".to_string());
+        let r = validate_guard_req(&req);
+        assert!(r.is_ok(), "separators are allowed: {r:?}");
+
+        // a mistyped 13-digit id (two adjacent digits transposed) → 400, even though its SHAPE is
+        // perfect. This is the whole point: it would otherwise pay a stranger, irreversibly.
+        req.tax_id = Some("2134567890121".to_string());
+        assert!(matches!(
+            validate_guard_req(&req),
+            Err(AppError::BadRequest(_))
+        ));
+
+        // letters → 400 (an obvious typo must not reach the payout file as a PromptPay proxy).
+        req.tax_id = Some("12AB567890123".to_string());
+        assert!(matches!(
+            validate_guard_req(&req),
+            Err(AppError::BadRequest(_))
+        ));
+
+        // too short → 400.
+        req.tax_id = Some("1234567".to_string());
+        assert!(matches!(
+            validate_guard_req(&req),
+            Err(AppError::BadRequest(_))
+        ));
+    }
+
+    #[test]
+    fn masked_tax_id_is_rejected() {
+        // Same round-trip hazard as account_number: GET /profile/me masks tax_id, so a client that
+        // re-PUTs the whole object would persist "*********0123" as the guard's national id and
+        // quietly make them unpayable. The mask is caught BEFORE the lenient digit check (which
+        // would reject it anyway) so the operator gets the actionable message, not "must be digits".
+        let mut req: UpsertGuardProfileRequest =
+            serde_json::from_value(serde_json::json!({ "gender": "male" })).unwrap();
+        req.tax_id = Some(crate::domain::mask::mask_account_number("1234567890123"));
+        match validate_guard_req(&req) {
+            Err(AppError::BadRequest(msg)) => {
+                assert!(msg.contains("tax_id"), "message must name the field: {msg}")
+            }
+            other => panic!("masked tax_id must be a 400, got {other:?}"),
+        }
+    }
+
+    // ----- PUT /admin/guard-profiles/{user_id}/payout: admin gate + body validation -----
+
+    #[tokio::test]
+    async fn admin_payout_update_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard must not be able to point their OWN payout at a different bank account, and a
+        // customer must not be able to read/write anyone's. The role gate short-circuits before
+        // the audit write + the DB, so the closed lazy pool is never touched.
+        for role in [ROLE_GUARD, ROLE_CUSTOMER] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri(format!("/admin/guard-profiles/{}/payout", Uuid::new_v4()))
+                        .header("authorization", format!("Bearer {}", token(role)))
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::json!({ "tax_id": "1234567890123" }).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::FORBIDDEN, "role {role} must 403");
+        }
+    }
+
+    #[tokio::test]
+    async fn admin_payout_update_rejects_missing_token() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/admin/guard-profiles/{}/payout", Uuid::new_v4()))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "tax_id": "1234567890123" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn admin_payout_update_rejects_bad_body_before_touching_the_db() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // Validation runs BEFORE the §30 audit write + the update, so these 400s are reachable
+        // with the closed lazy pool — which is also the proof they precede any DB access.
+        for body in [
+            serde_json::json!({ "tax_id": "12AB567890123" }), // letters
+            serde_json::json!({ "tax_id": "*********0123" }), // the masked read-back
+            serde_json::json!({ "account_number": "******7890" }), // ditto, bank side
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri(format!("/admin/guard-profiles/{}/payout", Uuid::new_v4()))
+                        .header("authorization", format!("Bearer {}", token(ROLE_ADMIN)))
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::BAD_REQUEST,
+                "body {body} must 400"
+            );
+        }
     }
 
     // ----- 401: missing / invalid token -----
@@ -2793,6 +3118,75 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// F9 wiring proof: the guard-scoped checksum must gate the GUARD payout route and NOT the
+    /// COMPANY one. A domain unit test proves the two rules differ; this proves each route calls
+    /// the one it should — the failure mode being fixed was exactly a correct rule on a wrong route.
+    #[tokio::test]
+    async fn org_tax_id_skips_the_checksum_that_gates_the_guard_route() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // Shape-perfect 13 digits, wrong mod-11 check digit (…016 is the valid one, so …015 is not).
+        const CHECKSUM_INVALID_13: &str = "0123456789015";
+
+        // COMPANY tax id: a juristic-person number the citizen checksum has no authority over, and
+        // the settings form re-sends whatever it loaded — a 400 here would make the screen
+        // unsavable and block the payout export, which needs a company tax id. So: NOT a 400. It
+        // gets past validation and dies at the closed lazy pool instead, which is the proof it
+        // reached the repo layer.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/admin/org-settings")
+                    .header("authorization", format!("Bearer {}", token(ROLE_ADMIN)))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "tax_id": CHECKSUM_INVALID_13 }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            res.status(),
+            StatusCode::BAD_REQUEST,
+            "the company tax id must not be gated by the citizen checksum"
+        );
+        // Asserted as a CLASS, not the exact 500, so a future change to the DB-error mapping does
+        // not fail this test for an unrelated reason — what matters is that it is a SERVER error
+        // (the closed pool) and therefore that the body cleared validation.
+        assert!(
+            res.status().is_server_error(),
+            "expected the closed test pool to fail AFTER validation, got {}",
+            res.status()
+        );
+
+        // GUARD payout: the SAME value is the PromptPay `NAT` proxy money is credited to, so it
+        // must 400 before the §30 audit write and the update.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/admin/guard-profiles/{}/payout", Uuid::new_v4()))
+                    .header("authorization", format!("Bearer {}", token(ROLE_ADMIN)))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "tax_id": CHECKSUM_INVALID_13 }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::BAD_REQUEST,
+            "a mistyped 13-digit guard tax id must never reach the payout file"
+        );
     }
 
     // ----- POST /admin/users/resolve — admin batch name resolver -----
@@ -4332,6 +4726,7 @@ mod tests {
         dec: Arc<DecodingKey>,
         db: sqlx::PgPool,
         s3: crate::s3::S3Client,
+        resolver: StubResolver,
     }
     impl shared::service_jwt::HasServiceJwt for InternalDeps {
         fn service_decoding_key(&self) -> &DecodingKey {
@@ -4339,11 +4734,15 @@ mod tests {
         }
     }
     impl ProfileInternalDeps for InternalDeps {
+        type Resolver = StubResolver;
         fn db(&self) -> &sqlx::PgPool {
             &self.db
         }
         fn s3(&self) -> &crate::s3::S3Client {
             &self.s3
+        }
+        fn identity_resolver(&self) -> &StubResolver {
+            &self.resolver
         }
     }
 
@@ -4355,10 +4754,17 @@ mod tests {
             .acquire_timeout(Duration::from_millis(200))
             .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/none")
             .expect("lazy pool");
+        internal_router_with(db, StubResolver::default())
+    }
+
+    /// The internal router over an explicit pool + identity resolver — so the guard payout-profile
+    /// tests can seed a REAL guard row and a stubbed identity answer (or a stubbed OUTAGE).
+    fn internal_router_with(db: sqlx::PgPool, resolver: StubResolver) -> Router {
         let deps = InternalDeps {
             dec: Arc::new(DecodingKey::from_secret(SERVICE_SECRET.as_bytes())),
             db,
             s3: test_s3(),
+            resolver,
         };
         Router::new()
             .route(
@@ -4368,6 +4774,14 @@ mod tests {
             .route(
                 "/internal/profiles/recipients",
                 get(internal_list_recipients::<InternalDeps>),
+            )
+            .route(
+                "/internal/guards/{guard_id}/payout-profile",
+                get(internal_guard_payout_profile::<InternalDeps>),
+            )
+            .route(
+                "/internal/customers/{user_id}/payout-profile",
+                get(internal_customer_payout_profile::<InternalDeps>),
             )
             .with_state(deps)
     }
@@ -4443,6 +4857,326 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ----- internal guard payout-profile: the PromptPay MOB fallback phone comes from identity -----
+
+    /// Seed a guard profile in the real DB and read its payout profile over a stubbed identity
+    /// that answers with `login_phone` (pass `None` to stub an identity OUTAGE — the resolver's
+    /// best-effort contract is an EMPTY map, indistinguishable from "unknown id", on any failure).
+    /// Returns the response body + the pool + the guard id (for cleanup), or `None` when
+    /// DATABASE_URL is absent (hermetic default).
+    async fn read_payout_profile(
+        login_phone: Option<&str>,
+    ) -> Option<(StatusCode, serde_json::Value, sqlx::PgPool, Uuid)> {
+        use shared::service_jwt::encode_service_jwt;
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL required for the payout-profile MOB-fallback tests");
+            return None;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .expect("connect real Postgres");
+        let guard = Uuid::new_v4();
+        // NO tax id on file — precisely the guard payment's `resolve_proxy` needs a MOB fallback
+        // for, and the one this endpoint used to make unpayable by hard-coding `phone: None`.
+        repo::upsert_guard_profile(
+            &pool,
+            guard,
+            &UpsertGuardProfileRequest {
+                full_name: Some("สมชาย รปภ".to_string()),
+                address: Some("99 Rama IX Rd".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("seed guard profile");
+
+        let resolver = match login_phone {
+            Some(p) => StubResolver::with_phones(&[(guard, p)]),
+            None => StubResolver::default(), // answers nothing — the outage shape
+        };
+        let ek = EncodingKey::from_secret(SERVICE_SECRET.as_bytes());
+        let tok = encode_service_jwt("payment", &ek, 60).unwrap();
+        let res = internal_router_with(pool.clone(), resolver)
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/internal/guards/{guard}/payout-profile"))
+                    .header("authorization", format!("Bearer {tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        Some((status, json, pool, guard))
+    }
+
+    #[tokio::test]
+    async fn payout_profile_returns_the_identity_login_phone() {
+        // A Thai login number is 10 digits — exactly what the SCB toolkit stamps as the PromptPay
+        // `MOB` proxy (CPX_Toolkit_Reverse_Engineering.md:2055 — 15→EWL, 13→NAT, 10→MOB).
+        let Some((status, json, pool, guard)) = read_payout_profile(Some("0812345678")).await
+        else {
+            return;
+        };
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            json["data"]["phone"],
+            serde_json::json!("0812345678"),
+            "the guard's LOGIN phone from identity is the PromptPay MOB proxy"
+        );
+        // …and the profile-owned fields still come through unmasked (the tax id is simply absent).
+        assert_eq!(json["data"]["full_name"], serde_json::json!("สมชาย รปภ"));
+        assert_eq!(json["data"]["tax_id"], serde_json::Value::Null);
+
+        let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+            .bind(guard)
+            .execute(&pool)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn payout_profile_degrades_to_null_phone_when_identity_fails() {
+        // The resolver's documented BEST-EFFORT contract: an identity outage returns an empty map.
+        // This read must still be 200 with `phone: null` — payment then excludes that ONE guard
+        // with a reason, rather than the whole payout batch failing on an unrelated service.
+        let Some((status, json, pool, guard)) = read_payout_profile(None).await else {
+            return;
+        };
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "an identity outage must not fail the payout read"
+        );
+        assert_eq!(json["data"]["phone"], serde_json::Value::Null);
+        assert_eq!(json["data"]["full_name"], serde_json::json!("สมชาย รปภ"));
+
+        let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+            .bind(guard)
+            .execute(&pool)
+            .await;
+    }
+
+    // ----- internal CUSTOMER payout-profile: the stream-① refund destination -----
+
+    #[tokio::test]
+    async fn customer_payout_profile_rejects_missing_token() {
+        // The refund destination is PII behind the service-JWT gate; an unauthenticated caller
+        // must be turned away BEFORE the (unreachable) DB is ever touched.
+        let res = internal_router()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/internal/customers/{}/payout-profile",
+                        Uuid::new_v4()
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn customer_payout_profile_rejects_invalid_token() {
+        let res = internal_router()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/internal/customers/{}/payout-profile",
+                        Uuid::new_v4()
+                    ))
+                    .header("authorization", "Bearer not.a.valid.jwt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Seed a customer profile carrying `contact_phone` and read its refund destination over a
+    /// stubbed identity that answers with `login_phone` (`None` = an identity OUTAGE — the
+    /// resolver's best-effort contract is an EMPTY map on any failure). Returns the response, the
+    /// pool + customer id (cleanup) and the resolver (so a test can prove whether the identity hop
+    /// was made at all). `None` when DATABASE_URL is absent (hermetic default).
+    #[allow(clippy::type_complexity)]
+    async fn read_customer_payout_profile(
+        contact_phone: Option<&str>,
+        login_phone: Option<&str>,
+    ) -> Option<(
+        StatusCode,
+        serde_json::Value,
+        sqlx::PgPool,
+        Uuid,
+        StubResolver,
+    )> {
+        use shared::service_jwt::encode_service_jwt;
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL required for the customer payout-profile tests");
+            return None;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .expect("connect real Postgres");
+        let customer = Uuid::new_v4();
+        repo::upsert_customer_profile(
+            &pool,
+            customer,
+            &UpsertCustomerProfileRequest {
+                full_name: Some("สมหญิง ใจดี".to_string()),
+                address: Some("1 Sukhumvit Rd".to_string()),
+                contact_phone: contact_phone.map(str::to_string),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("seed customer profile");
+
+        let resolver = match login_phone {
+            Some(p) => StubResolver::with_phones(&[(customer, p)]),
+            None => StubResolver::default(), // answers nothing — the outage shape
+        };
+        let ek = EncodingKey::from_secret(SERVICE_SECRET.as_bytes());
+        let tok = encode_service_jwt("payment", &ek, 60).unwrap();
+        let res = internal_router_with(pool.clone(), resolver.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/internal/customers/{customer}/payout-profile"))
+                    .header("authorization", format!("Bearer {tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        Some((status, json, pool, customer, resolver))
+    }
+
+    /// Delete a seeded customer profile (best-effort — a failed cleanup must not fail the test).
+    async fn drop_customer_profile(pool: &sqlx::PgPool, customer: Uuid) {
+        let _ = sqlx::query("DELETE FROM profile.customer_profiles WHERE user_id = $1")
+            .bind(customer)
+            .execute(pool)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn customer_payout_profile_prefers_the_contact_phone() {
+        // `contact_phone` is the number the customer CHOSE to be contacted on, so the refund (and
+        // its notification) goes there even though identity holds a different login number.
+        let Some((status, json, pool, customer, resolver)) =
+            read_customer_payout_profile(Some("0891112222"), Some("0812345678")).await
+        else {
+            return;
+        };
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            json["data"]["phone"],
+            serde_json::json!("0891112222"),
+            "the customer's chosen contact_phone is the refund destination"
+        );
+        assert!(
+            resolver.calls().is_empty(),
+            "no identity round-trip is bought for a customer who already has a destination"
+        );
+        assert_eq!(json["data"]["full_name"], serde_json::json!("สมหญิง ใจดี"));
+        assert_eq!(json["data"]["address"], serde_json::json!("1 Sukhumvit Rd"));
+        drop_customer_profile(&pool, customer).await;
+    }
+
+    #[tokio::test]
+    async fn customer_payout_profile_falls_back_to_the_login_phone() {
+        // A BLANK contact_phone (stored as spaces — just as unpayable as NULL) must fall through
+        // to the guaranteed-present login phone rather than being handed on as a "destination".
+        let Some((status, json, pool, customer, resolver)) =
+            read_customer_payout_profile(Some("   "), Some("0812345678")).await
+        else {
+            return;
+        };
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            json["data"]["phone"],
+            serde_json::json!("0812345678"),
+            "a blank contact_phone falls back to identity's LOGIN phone"
+        );
+        assert_eq!(
+            resolver.calls(),
+            vec![vec![customer]],
+            "exactly one identity lookup, for this customer only"
+        );
+        drop_customer_profile(&pool, customer).await;
+    }
+
+    #[tokio::test]
+    async fn customer_payout_profile_degrades_to_null_phone_when_identity_fails() {
+        // No contact_phone AND identity unreachable: still 200 with `phone: null`. Payment then
+        // excludes that ONE customer with a reason — never a whole refund batch that fails on an
+        // unrelated service being down, and never money sent to a blank.
+        let Some((status, json, pool, customer, _resolver)) =
+            read_customer_payout_profile(None, None).await
+        else {
+            return;
+        };
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "an identity outage must not fail the refund read"
+        );
+        assert_eq!(json["data"]["phone"], serde_json::Value::Null);
+        assert_eq!(json["data"]["full_name"], serde_json::json!("สมหญิง ใจดี"));
+        drop_customer_profile(&pool, customer).await;
+    }
+
+    #[tokio::test]
+    async fn customer_payout_profile_404s_for_an_unknown_customer() {
+        // No profile row = no destination. A 404 (not an empty 200) is what lets payment exclude
+        // the customer with a reason instead of building a recipient out of nulls.
+        use shared::service_jwt::encode_service_jwt;
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL required for the customer payout-profile tests");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .expect("connect real Postgres");
+        let ek = EncodingKey::from_secret(SERVICE_SECRET.as_bytes());
+        let tok = encode_service_jwt("payment", &ek, 60).unwrap();
+        let res = internal_router_with(pool, StubResolver::default())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/internal/customers/{}/payout-profile",
+                        Uuid::new_v4()
+                    ))
+                    .header("authorization", format!("Bearer {tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

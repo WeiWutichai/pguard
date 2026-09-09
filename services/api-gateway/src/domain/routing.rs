@@ -335,6 +335,16 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin PLATFORM-CUT sweep — stream ② ยอดที่โดนหักเข้าระบบ, the SCB `OAT` file that moves
+        // what the platform keeps into the company revenue account. The single prefix routes
+        // /preview, /export and the whole /batches/{id}/… lifecycle, exactly like /admin/payouts and
+        // /admin/refunds next to it. Payment owns the money; admin authz is its own job.
+        prefix: "/admin/deductions",
+        suffix: None,
+        upstream: Upstream::Payment,
+        tier: Tier::Api,
+    },
+    Rule {
         // Admin service-catalog (pricing) CRUD — hosted by booking. The single prefix also
         // routes the `/services/{id}` subpath. Admin authz is the booking service's job.
         prefix: "/admin/pricing",
@@ -416,6 +426,24 @@ const RULES: &[Rule] = &[
     Rule {
         // Per-customer total spend (admin customers page aggregates). Payment owns the money.
         prefix: "/admin/reports/customer-spend",
+        suffix: None,
+        upstream: Upstream::Payment,
+        tier: Tier::Api,
+    },
+    Rule {
+        // Output-VAT register (รายงานภาษีขาย) backing a ภ.พ.30 filing. Payment owns the VAT split.
+        // Its OWN prefix rather than a bare `/admin/reports` one: booking owns
+        // `/admin/reports/bookings` + `/admin/reports/customer-bookings`, so a shorter shared rule
+        // would have to be beaten by both of theirs on every request for no gain.
+        prefix: "/admin/reports/vat-register",
+        suffix: None,
+        upstream: Upstream::Payment,
+        tier: Tier::Api,
+    },
+    Rule {
+        // ภ.ง.ด.3/53 payee list — the first reader `payout_batch_items.wht` has ever had. Payment
+        // owns the withholding. Same reasoning as the VAT register above for the explicit prefix.
+        prefix: "/admin/reports/wht-payees",
         suffix: None,
         upstream: Upstream::Payment,
         tier: Tier::Api,
@@ -1389,6 +1417,67 @@ mod tests {
             assert_eq!(fwd, path.trim_start_matches("/v1"), "{path}");
             assert!(!public, "admin routes are edge-protected");
             assert_eq!(tier, Tier::Api);
+        }
+    }
+
+    /// STREAM ② — the platform-cut sweep. A NEW top-level admin prefix, and the reason this test
+    /// exists at all: a missing gateway rule has broken the bank-export feature twice (a 404 that
+    /// looks like a backend bug because the handler is right there in payment). Every sub-path the
+    /// service mounts is pinned, since they all ride the one prefix match (`suffix: None`).
+    #[test]
+    fn admin_deductions_subpaths_route_to_payment() {
+        for path in [
+            "/v1/admin/deductions",
+            "/v1/admin/deductions/preview",
+            "/v1/admin/deductions/export",
+            "/v1/admin/deductions/batches",
+            "/v1/admin/deductions/batches/2f1c9d3e-0000-4000-8000-000000000001",
+            "/v1/admin/deductions/batches/2f1c9d3e-0000-4000-8000-000000000001/file",
+            "/v1/admin/deductions/batches/2f1c9d3e-0000-4000-8000-000000000001/status",
+            "/v1/admin/deductions/batches/2f1c9d3e-0000-4000-8000-000000000001/void",
+            "/v1/admin/deductions/batches/2f1c9d3e-0000-4000-8000-000000000001/items/void",
+        ] {
+            let (up, fwd, public, tier) = proxy(resolve(path));
+            assert_eq!(up, Upstream::Payment, "{path}");
+            assert_eq!(fwd, path.trim_start_matches("/v1"), "{path}");
+            assert!(!public, "admin routes are edge-protected");
+            assert_eq!(tier, Tier::Api);
+        }
+    }
+
+    /// The two TAX REPORTS get their own prefixes, and `/admin/reports/*` is SHARED between two
+    /// services — booking owns the booking analytics, payment owns the money. This pins both halves
+    /// at once, because the failure mode of getting it wrong is a report that silently answers from
+    /// the wrong service rather than a visible 404.
+    #[test]
+    fn the_tax_reports_route_to_payment_without_disturbing_the_shared_reports_prefix() {
+        for path in [
+            "/v1/admin/reports/vat-register",
+            "/v1/admin/reports/wht-payees",
+        ] {
+            let (up, fwd, public, tier) = proxy(resolve(path));
+            assert_eq!(up, Upstream::Payment, "{path}");
+            assert_eq!(fwd, path.trim_start_matches("/v1"), "{path}");
+            assert!(!public, "admin routes are edge-protected");
+            assert_eq!(tier, Tier::Api);
+        }
+        // A query string rides along untouched (`?month=2026-09&format=csv`) — the CSV download is a
+        // plain link, so the whole feature depends on it.
+        let (up, fwd, _, _) = proxy(resolve(
+            "/v1/admin/reports/wht-payees?month=2026-09&format=csv",
+        ));
+        assert_eq!(up, Upstream::Payment);
+        assert_eq!(fwd, "/admin/reports/wht-payees?month=2026-09&format=csv");
+
+        // …and the neighbours the web-admin `/reports` page already calls are UNMOVED.
+        for (path, expected) in [
+            ("/v1/admin/reports/revenue", Upstream::Payment),
+            ("/v1/admin/reports/customer-spend", Upstream::Payment),
+            ("/v1/admin/reports/bookings", Upstream::Booking),
+            ("/v1/admin/reports/customer-bookings", Upstream::Booking),
+        ] {
+            let (up, _, _, _) = proxy(resolve(path));
+            assert_eq!(up, expected, "{path} must not move");
         }
     }
 

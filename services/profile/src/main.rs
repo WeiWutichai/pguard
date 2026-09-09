@@ -257,6 +257,15 @@ async fn main() -> anyhow::Result<()> {
             "/admin/guard-profiles/{user_id}/reject",
             post(api::admin_reject_guard::<AppState>),
         )
+        // Admin correction form for the guard's PAYOUT fields (national/tax id + bank block).
+        // Nothing else in the system could ever write `tax_id` — which is both the PromptPay NAT
+        // proxy and the ภ.ง.ด. recipient TIN — so the guard-payout export had no payable guard on
+        // any install. COALESCE-merge (an omitted field keeps its stored value); PDPA §30-audited.
+        // Routed by the gateway's existing `/admin/guard-profiles` prefix rule (subpaths included).
+        .route(
+            "/admin/guard-profiles/{user_id}/payout",
+            axum::routing::put(api::admin_update_guard_payout::<AppState>),
+        )
         .route(
             "/admin/customer-profiles/{user_id}/approve",
             post(api::admin_approve_customer::<AppState>),
@@ -284,6 +293,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/internal/guards/{guard_id}/payout-profile",
             get(api::internal_guard_payout_profile::<AppState>),
+        )
+        .route(
+            "/internal/customers/{user_id}/payout-profile",
+            get(api::internal_customer_payout_profile::<AppState>),
         )
         .route(
             "/internal/org-settings",

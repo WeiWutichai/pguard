@@ -31,6 +31,7 @@ lib/src/model/avg_approval_time.dart
 lib/src/model/create_support_ticket200_response.dart
 lib/src/model/create_support_ticket_request.dart
 lib/src/model/customer_avatar_response.dart
+lib/src/model/customer_payout_profile.dart
 lib/src/model/customer_profile.dart
 lib/src/model/customer_profile_admin.dart
 lib/src/model/date.dart
@@ -51,15 +52,20 @@ lib/src/model/guard_avatar_response.dart
 lib/src/model/guard_document_expiry.dart
 lib/src/model/guard_document_presence.dart
 lib/src/model/guard_document_response.dart
+lib/src/model/guard_payout_profile.dart
 lib/src/model/guard_profile.dart
 lib/src/model/guard_profile_admin.dart
 lib/src/model/inline_object.dart
 lib/src/model/inline_object1.dart
 lib/src/model/inline_object1_all_of_data.dart
 lib/src/model/inline_object2.dart
+lib/src/model/internal_customer_payout_profile200_response.dart
 lib/src/model/internal_export_user200_response.dart
 lib/src/model/internal_guard.dart
+lib/src/model/internal_guard_payout_profile200_response.dart
 lib/src/model/internal_list_guards200_response.dart
+lib/src/model/internal_org_settings.dart
+lib/src/model/internal_org_settings200_response.dart
 lib/src/model/internal_pending_roles200_response.dart
 lib/src/model/list_guard_document_expiries200_response.dart
 lib/src/model/my_customer_profile.dart
@@ -77,6 +83,7 @@ lib/src/model/set_document_expiry_request.dart
 lib/src/model/set_guard_document_expiry200_response.dart
 lib/src/model/stage_request.dart
 lib/src/model/support_ticket.dart
+lib/src/model/update_guard_payout_request.dart
 lib/src/model/update_org_settings_request.dart
 lib/src/model/upsert_customer_profile_request.dart
 lib/src/model/upsert_guard_profile_request.dart

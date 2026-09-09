@@ -1,8 +1,10 @@
 // Screen-local bilingual copy for the wallet (กระเป๋าเงิน) screen — a READ-ONLY admin payment
-// ledger built on adminListPayments (prepared ahead of a real payment integration). The
-// design's manual refund queue (pending → confirm-with-slip → skip) contradicts the locked v2
-// decision that refunds are AUTOMATIC / event-driven, and has no endpoint — it renders as an
-// honest gap, never a fake action. Money helpers (fmtBaht) are reused from bookings/copy.
+// ledger built on adminListPayments. It stays read-only on purpose: a refund is OWED automatically
+// (the completion reconcile, a cancellation, the race-lost pre-pay, a duplicate slip), and the
+// money then leaves through the SCB bulk file generated on `/refunds` — one place where refunds are
+// actually sent, with a batch history and a paid-marker behind it. Acting on a single row here
+// would be a second, unrecorded path to the same money. Money helpers (fmtBaht) come from
+// bookings/copy.
 import type { Lang } from "@/lib/lang";
 
 /** payment.payment_status enum (real). */
@@ -23,8 +25,10 @@ export interface WalletCopy {
   kpiRefunded: string;
   kpiPendingRefunds: string;
   searchPlaceholder: string;
-  awaitingApi: string;
-  refundQueueGap: string;
+  /** Where a "รอคืน" row on this ledger actually gets paid out — this screen only reports it. */
+  refundActionNote: string;
+  /** The link's own label (the destination screen, named). */
+  refundActionLink: string;
   colPayment: string;
   colCustomer: string;
   colGuard: string;
@@ -47,9 +51,9 @@ export const COPY: Record<Lang, WalletCopy> = {
     kpiRefunded: "คืนเงินแล้ว",
     kpiPendingRefunds: "รอคืนเงิน",
     searchPlaceholder: "ค้นหา payment / ลูกค้า / booking…",
-    awaitingApi: "รอ API",
-    refundQueueGap:
-      "v2 คืนเงินอัตโนมัติแบบ event-driven — ไม่มีคิวอนุมัติคืนเงินด้วยมือ (pending/processed/skipped ของดีไซน์รอ API)",
+    refundActionNote:
+      "หน้านี้ดูอย่างเดียว — ยอดที่ขึ้นว่า “รอคืน” จะถูกคืนจริงด้วยการสร้างไฟล์อัปโหลด SCB ที่หน้าคืนเงินลูกค้า (ไฟล์เดียวคืนได้หลายคน มีประวัติไฟล์และกันคืนซ้ำ) รวมถึงกรณีลูกค้าโอนซ้ำที่ไม่ได้อยู่ในตารางนี้",
+    refundActionLink: "ไปหน้าคืนเงินลูกค้า",
     colPayment: "Payment",
     colCustomer: "ลูกค้า",
     colGuard: "เจ้าหน้าที่",
@@ -70,9 +74,9 @@ export const COPY: Record<Lang, WalletCopy> = {
     kpiRefunded: "Refunded",
     kpiPendingRefunds: "Pending refunds",
     searchPlaceholder: "Search payment / customer / booking…",
-    awaitingApi: "awaiting API",
-    refundQueueGap:
-      "v2 refunds are automatic / event-driven — there is no manual approval queue (the design's pending/processed/skipped tabs await an API)",
+    refundActionNote:
+      "This ledger is read-only — a row marked “Pending” is actually refunded by generating the SCB upload file on the customer-refunds screen (one file refunds many customers, with a batch history and a double-refund guard). That screen also covers duplicate transfers, which never appear in this table.",
+    refundActionLink: "Open customer refunds",
     colPayment: "Payment",
     colCustomer: "Customer",
     colGuard: "Guard",

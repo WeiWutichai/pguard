@@ -892,7 +892,7 @@ class ProfileApi {
   }
 
   /// Update the caller&#39;s EXISTING guard profile (role&#x3D;guard)
-  /// Updates an existing guard profile&#39;s editable fields. Unlike &#x60;POST&#x60; this never inserts: a caller with no profile yet receives 404. Requires role &#x60;guard&#x60;. The read-back masks &#x60;account_number&#x60; (PDPA). 
+  /// Updates an existing guard profile&#39;s editable fields. Unlike &#x60;POST&#x60; this never inserts: a caller with no profile yet receives 404. Requires role &#x60;guard&#x60;. The read-back masks &#x60;account_number&#x60; and &#x60;tax_id&#x60; (PDPA); re-sending either masked value is a 400. &#x60;tax_id&#x60; is COALESCE-merged (an omitted key keeps the stored value — see the schema); every other field is overwritten. 
   ///
   /// Parameters:
   /// * [upsertGuardProfileRequest] 
@@ -1417,7 +1417,7 @@ class ProfileApi {
   }
 
   /// Create or update the caller&#39;s guard profile (profile_token OR logged-in guard)
-  /// Upserts the caller&#39;s guard profile. **Dual auth** (either satisfies the request):   - a single-use, purpose-scoped &#x60;profileToken&#x60; (&#x60;guard_profile&#x60;) from registration     (&#x60;POST /auth/register&#x60;) — the user is NOT logged in yet. The token is consumed     single-use; a &#x60;customer_profile&#x60; token is rejected here (purpose isolation).   - a logged-in guard&#39;s &#x60;bearerAuth&#x60; access token (a later self-edit), role-gated.  Writes ONLY the profile schema: on first create &#x60;approval_status&#x60; is &#x60;pending&#x60;; a later upsert edits fields but NEVER changes the approval decision (only an admin does, via approve/reject), and &#x60;users.role&#x60; (identity-owned) is never touched. The read-back masks &#x60;account_number&#x60; (PDPA). 
+  /// Upserts the caller&#39;s guard profile. **Dual auth** (either satisfies the request):   - a single-use, purpose-scoped &#x60;profileToken&#x60; (&#x60;guard_profile&#x60;) from registration     (&#x60;POST /auth/register&#x60;) — the user is NOT logged in yet. The token is consumed     single-use; a &#x60;customer_profile&#x60; token is rejected here (purpose isolation).   - a logged-in guard&#39;s &#x60;bearerAuth&#x60; access token (a later self-edit), role-gated.  Writes ONLY the profile schema: on first create &#x60;approval_status&#x60; is &#x60;pending&#x60;; a later upsert edits fields but NEVER changes the approval decision (only an admin does, via approve/reject), and &#x60;users.role&#x60; (identity-owned) is never touched. The read-back masks &#x60;account_number&#x60; and &#x60;tax_id&#x60; (PDPA); re-sending either masked value is a 400. &#x60;tax_id&#x60; is COALESCE-merged (an omitted key keeps the stored value — see the schema); every other field is overwritten. 
   ///
   /// Parameters:
   /// * [upsertGuardProfileRequest] 
