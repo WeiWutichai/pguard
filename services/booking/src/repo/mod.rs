@@ -5808,11 +5808,36 @@ mod db_tests {
         cleanup_service(&pool, service.id).await;
     }
 
+    /// TEST ISOLATION for the three SWEEPS — read this before touching a sweep test.
+    ///
+    /// [`expire_stale_open_bookings`], [`auto_complete_overdue_pending`] and
+    /// [`close_overdue_arrived`] each scan the WHOLE `booking.bookings` table by status: that is
+    /// exactly right in production (a background sweep must reach every stranded job, and one that
+    /// only looked at some rows would be the real bug), so there is nothing to scope down. But the
+    /// gated suite runs these tests IN PARALLEL against ONE shared Postgres, so a sweep here reaches
+    /// every OTHER test's fixture too — and it closed one: the `arrived` closure-edges fixture is
+    /// backdated-and-`arrived` for the round trip it takes to be built, and `close_overdue_arrived`
+    /// running in this module completed it out from under its assertions ("completed" != "arrived").
+    ///
+    /// So the isolation is in TIME, not in the query. A sweep test builds its whole scenario around
+    /// this epoch — ~30 days back — and hands its sweep this instant as `now` (the parameter
+    /// production fills with `Utc::now()`; nothing test-only is added to the sweep for this). Every
+    /// other test's fixture is pinned to the REAL now, so by each sweep's own domain predicate those
+    /// rows are NotDue at this instant and cannot be touched, while the sweep still scans globally
+    /// and every branch is still exercised against real rows.
+    ///
+    /// Two rules keep it that way: a sweep test passes `sweep_epoch()` (never `Utc::now()`) as the
+    /// sweep's `now`, and NO test builds a fixture anywhere near 30 days old.
+    fn sweep_epoch() -> DateTime<Utc> {
+        Utc::now() - chrono::Duration::days(30)
+    }
+
     /// ISSUE 1 sweep — `expire_stale_open_bookings` cancels an OPEN request whose scheduled window
     /// has ALREADY ended (with the SYSTEM reason), while a still-FUTURE open request and an
     /// already-ACCEPTED (assigned) booking whose window has passed are BOTH left untouched. The
     /// swept cancel rides a `booking.cancelled` event whose `charge_cancel_fee` is FALSE — a lapsed
-    /// unpaid request owes no fee. DATABASE_URL-gated (hermetic when unset).
+    /// unpaid request owes no fee. Windows are relative to [`sweep_epoch`] (see it: this sweep is a
+    /// global scan on a shared DB). DATABASE_URL-gated (hermetic when unset).
     #[tokio::test]
     async fn expire_sweep_cancels_only_stale_open_requests() {
         let Ok(url) = std::env::var("DATABASE_URL") else {
@@ -5824,6 +5849,10 @@ mod db_tests {
             .connect(&url)
             .await
             .expect("connect real Postgres");
+
+        // Everything below is relative to the sweep's own instant, NOT the real clock — see
+        // `sweep_epoch`. "5h ago" means 5h before the moment this test sweeps at.
+        let epoch = sweep_epoch();
 
         // (a) OPEN request whose window ALREADY ended: scheduled 5h ago, 4h job → ended 1h ago.
         let stale = create_booking(
@@ -5837,13 +5866,12 @@ mod db_tests {
         )
         .await
         .expect("create stale");
-        sqlx::query(
-            "UPDATE booking.bookings SET scheduled_at = now() - interval '5 hours' WHERE id = $1",
-        )
-        .bind(stale.id)
-        .execute(&pool)
-        .await
-        .expect("backdate stale window");
+        sqlx::query("UPDATE booking.bookings SET scheduled_at = $2 WHERE id = $1")
+            .bind(stale.id)
+            .bind(epoch - chrono::Duration::hours(5))
+            .execute(&pool)
+            .await
+            .expect("backdate stale window");
 
         // (b) OPEN request still in the FUTURE — must NOT be swept.
         let fresh = create_booking(
@@ -5857,13 +5885,12 @@ mod db_tests {
         )
         .await
         .expect("create fresh");
-        sqlx::query(
-            "UPDATE booking.bookings SET scheduled_at = now() + interval '2 hours' WHERE id = $1",
-        )
-        .bind(fresh.id)
-        .execute(&pool)
-        .await
-        .expect("future window");
+        sqlx::query("UPDATE booking.bookings SET scheduled_at = $2 WHERE id = $1")
+            .bind(fresh.id)
+            .bind(epoch + chrono::Duration::hours(2))
+            .execute(&pool)
+            .await
+            .expect("future window");
 
         // (c) ACCEPTED (assigned) booking whose window has passed — NOT an open request; the sweep
         //     selects only `requested`/unassigned rows, so this must remain accepted.
@@ -5891,15 +5918,14 @@ mod db_tests {
         )
         .await
         .expect("accept");
-        sqlx::query(
-            "UPDATE booking.bookings SET scheduled_at = now() - interval '5 hours' WHERE id = $1",
-        )
-        .bind(accepted.id)
-        .execute(&pool)
-        .await
-        .expect("backdate accepted window");
+        sqlx::query("UPDATE booking.bookings SET scheduled_at = $2 WHERE id = $1")
+            .bind(accepted.id)
+            .bind(epoch - chrono::Duration::hours(5))
+            .execute(&pool)
+            .await
+            .expect("backdate accepted window");
 
-        let swept = expire_stale_open_bookings(&pool, Utc::now())
+        let swept = expire_stale_open_bookings(&pool, epoch)
             .await
             .expect("run expire sweep");
         assert!(swept >= 1, "at least the one stale open request is swept");
@@ -5963,7 +5989,8 @@ mod db_tests {
     /// ISSUE 2 sweep — `auto_complete_overdue_pending` auto-COMPLETES a `pending_completion` booking
     /// whose confirm grace has elapsed, while one still inside its window is left pending. The
     /// worked duration is measured from `completion_requested_at` (NOT the auto-complete moment), so
-    /// the grace delay is never billed. DATABASE_URL-gated (hermetic when unset).
+    /// the grace delay is never billed. Clocks are relative to [`sweep_epoch`] (see it: this sweep is
+    /// a global scan on a shared DB). DATABASE_URL-gated (hermetic when unset).
     #[tokio::test]
     async fn auto_complete_sweep_completes_only_overdue_pending() {
         let Ok(url) = std::env::var("DATABASE_URL") else {
@@ -5975,6 +6002,10 @@ mod db_tests {
             .connect(&url)
             .await
             .expect("connect real Postgres");
+
+        // All clocks below are relative to the sweep's own instant, NOT the real one — see
+        // `sweep_epoch`.
+        let epoch = sweep_epoch();
 
         // OVERDUE pending: drive to pending_completion, then backdate the clocks so start→request
         // = 3h and the window+grace sit well in the past (scheduled 6h ago, 4h job → ended 2h ago).
@@ -5996,12 +6027,13 @@ mod db_tests {
         .expect("request completion");
         sqlx::query(
             "UPDATE booking.bookings \
-             SET scheduled_at = now() - interval '6 hours', \
-                 work_started_at = now() - interval '5 hours', \
-                 completion_requested_at = now() - interval '2 hours' \
+             SET scheduled_at = $2, work_started_at = $3, completion_requested_at = $4 \
              WHERE id = $1",
         )
         .bind(overdue_id)
+        .bind(epoch - chrono::Duration::hours(6))
+        .bind(epoch - chrono::Duration::hours(5))
+        .bind(epoch - chrono::Duration::hours(2))
         .execute(&pool)
         .await
         .expect("backdate overdue clocks");
@@ -6026,7 +6058,7 @@ mod db_tests {
 
         let completed = auto_complete_overdue_pending(
             &pool,
-            Utc::now(),
+            epoch,
             crate::domain::scheduling::AUTO_COMPLETE_GRACE_MINUTES as i32,
         )
         .await
@@ -6077,19 +6109,25 @@ mod db_tests {
         cleanup_booking(&pool, pending_id).await;
     }
 
-    /// Drive a fresh booking to `arrived` (optionally started, optionally check-in'd) and then
-    /// BACKDATE its whole window into the past: `scheduled_at = now − 5h`, 3 booked hours, so the
-    /// window ended 2h ago — well past the 30-min grace. `work_started_at` is backdated to
+    /// Drive a fresh booking to `arrived` (optionally started, optionally check-in'd) and then move
+    /// its whole window to `scheduled_at`, 3 booked hours. `work_started_at` is moved to
     /// `scheduled_at` (an on-time start) AFTER the check-in is filed, because a check-in is itself
     /// rejected once `work_started_at + hours + 30min` has passed (G1).
     ///
-    /// Returns (booking_id, customer_id, guard_id). The expected paid-window duration for a row
-    /// built with `start = true` is exactly 3h = 10800s, independent of when the sweep runs.
+    /// The window is the CALLER's to state, and it is written ONCE, in that final UPDATE: a caller
+    /// that wants a live window must not get a backdated row first and correct it afterwards,
+    /// because between the two statements the row is a legitimate `close_overdue_arrived` candidate
+    /// on the shared test DB — which is precisely how a sibling sweep once completed the
+    /// closure-edges fixture mid-assertion (see `sweep_epoch`).
+    ///
+    /// Returns (booking_id, customer_id, guard_id). The paid-window duration for a row built with
+    /// `start = true` and a CLOSED window is exactly 3h = 10800s, independent of when a sweep runs.
     async fn stranded_arrived_booking(
         pool: &sqlx::PgPool,
         address: &str,
         start: bool,
         check_in: bool,
+        scheduled_at: DateTime<Utc>,
     ) -> (Uuid, Uuid, Uuid) {
         let customer_id = Uuid::new_v4();
         let guard_id = Uuid::new_v4();
@@ -6134,18 +6172,19 @@ mod db_tests {
                 .await
                 .expect("start check-in");
         }
-        // Backdate LAST: the whole window (and the on-time start) moves into the past together.
+        // Move the window LAST, in ONE statement: the window (and the on-time start) land on the
+        // caller's instant together, and the row is never briefly on some other clock.
         sqlx::query(
             "UPDATE booking.bookings \
-             SET scheduled_at = now() - interval '5 hours', \
-                 work_started_at = CASE WHEN work_started_at IS NULL THEN NULL \
-                                        ELSE now() - interval '5 hours' END \
+             SET scheduled_at = $2, \
+                 work_started_at = CASE WHEN work_started_at IS NULL THEN NULL ELSE $2 END \
              WHERE id = $1",
         )
         .bind(created.id)
+        .bind(scheduled_at)
         .execute(pool)
         .await
-        .expect("backdate window");
+        .expect("set window");
         (created.id, customer_id, guard_id)
     }
 
@@ -6166,17 +6205,18 @@ mod db_tests {
             .expect("connect real Postgres");
         let correlation = Uuid::new_v4();
 
-        // (a) IN-WINDOW: the guard finished early on a job whose window still has hours to run.
-        //     The customer's "ให้ทำต่อ" is legitimate — they are spending time they paid for.
-        let (open_id, open_customer, open_guard) =
-            stranded_arrived_booking(&pool, "1 Keep Working Rd", true, true).await;
-        sqlx::query(
-            "UPDATE booking.bookings SET scheduled_at = now() - interval '30 minutes' WHERE id = $1",
+        // (a) IN-WINDOW: the guard finished early on a job whose window still has hours to run
+        //     (started 30min ago, 3 booked hours). The customer's "ให้ทำต่อ" is legitimate — they
+        //     are spending time they paid for. The gate reads the REAL clock, so unlike the sweep
+        //     tests this scenario is pinned to `Utc::now()`.
+        let (open_id, open_customer, open_guard) = stranded_arrived_booking(
+            &pool,
+            "1 Keep Working Rd",
+            true,
+            true,
+            Utc::now() - chrono::Duration::minutes(30),
         )
-        .bind(open_id)
-        .execute(&pool)
-        .await
-        .expect("re-open the window");
+        .await;
         transition(
             &pool,
             open_id,
@@ -6204,8 +6244,14 @@ mod db_tests {
         assert_eq!(bounced.status, "arrived");
 
         // (b) WINDOW CLOSED: the same reject, on a booking whose window ended 2h ago.
-        let (closed_id, closed_customer, closed_guard) =
-            stranded_arrived_booking(&pool, "2 Keep Working Rd", true, true).await;
+        let (closed_id, closed_customer, closed_guard) = stranded_arrived_booking(
+            &pool,
+            "2 Keep Working Rd",
+            true,
+            true,
+            Utc::now() - chrono::Duration::hours(5),
+        )
+        .await;
         transition(
             &pool,
             closed_id,
@@ -6273,7 +6319,9 @@ mod db_tests {
     ///     own `now` (which is 2h+ later here — the whole point of the cap);
     ///   * never started → CANCELLED with `system_not_started` and no fee, so payment full-refunds;
     ///   * started but never attested → LEFT ALONE for a human.
-    /// DATABASE_URL-gated (hermetic when unset).
+    /// Windows are relative to [`sweep_epoch`] — READ IT before changing them: this is the sweep
+    /// that closed a neighbour test's fixture, and the epoch is what keeps its global scan off
+    /// every fixture built around the real clock. DATABASE_URL-gated (hermetic when unset).
     #[tokio::test]
     async fn arrived_sweep_closes_stranded_jobs_on_the_evidence_of_work() {
         let Ok(url) = std::env::var("DATABASE_URL") else {
@@ -6286,26 +6334,32 @@ mod db_tests {
             .await
             .expect("connect real Postgres");
 
-        let (worked_id, ..) = stranded_arrived_booking(&pool, "1 Stranded Rd", true, true).await;
+        // Every window below is relative to the instant this test sweeps at — see `sweep_epoch`.
+        // "5h ago" and "in 1h" are read against `epoch`, so the sweep's verdict on each row is the
+        // same one it would reach on the real clock, while no fixture on the real clock is due.
+        let epoch = sweep_epoch();
+        let closed = epoch - chrono::Duration::hours(5); // 3 booked hours → ended 2h before `epoch`
+
+        let (worked_id, ..) =
+            stranded_arrived_booking(&pool, "1 Stranded Rd", true, true, closed).await;
         let (unstarted_id, ..) =
-            stranded_arrived_booking(&pool, "2 Stranded Rd", false, false).await;
+            stranded_arrived_booking(&pool, "2 Stranded Rd", false, false, closed).await;
         let (unattested_id, ..) =
-            stranded_arrived_booking(&pool, "3 Stranded Rd", true, false).await;
-        // A live job whose window is still open — must survive the sweep untouched.
-        let (live_id, _, live_guard) =
-            stranded_arrived_booking(&pool, "4 Stranded Rd", true, true).await;
-        sqlx::query(
-            "UPDATE booking.bookings SET scheduled_at = now() + interval '1 hour' WHERE id = $1",
+            stranded_arrived_booking(&pool, "3 Stranded Rd", true, false, closed).await;
+        // A live job whose window is still open at `epoch` — must survive the sweep untouched.
+        let (live_id, _, live_guard) = stranded_arrived_booking(
+            &pool,
+            "4 Stranded Rd",
+            true,
+            true,
+            epoch + chrono::Duration::hours(1),
         )
-        .bind(live_id)
-        .execute(&pool)
-        .await
-        .expect("future window");
+        .await;
         let _ = live_guard;
 
         let counts = close_overdue_arrived(
             &pool,
-            Utc::now(),
+            epoch,
             crate::domain::scheduling::AUTO_COMPLETE_GRACE_MINUTES as i32,
         )
         .await
@@ -6320,9 +6374,9 @@ mod db_tests {
         assert_eq!(
             worked.actual_seconds,
             Some(3 * 3600),
-            "billed on scheduled_at → scheduled end (3 booked hours), NOT on the sweep's `now` \
-             which is 2h+ past the window — the grace is never billed and a late tick never \
-             inflates the bill"
+            "billed on scheduled_at → scheduled end (3 booked hours), NOT on the clock the closure \
+             runs at — which here is 2h past the window at `epoch` and 30 DAYS past it in real \
+             time. The grace is never billed and a late tick never inflates the bill"
         );
         let rows: Vec<OutboxRow> = sqlx::query_as(
             "SELECT id, topic, payload FROM booking.outbox \
@@ -6413,18 +6467,20 @@ mod db_tests {
             .await
             .expect("connect real Postgres");
 
-        let (id, customer_id, guard_id) =
-            stranded_arrived_booking(&pool, "1 System Only Rd", true, true).await;
-        // Push the window into the FUTURE. The edges are system-only regardless of timing, and
-        // this keeps the row out of reach of a `close_overdue_arrived` running in a sibling test
-        // on the same shared database (which would otherwise close it mid-assertion).
-        sqlx::query(
-            "UPDATE booking.bookings SET scheduled_at = now() + interval '1 hour' WHERE id = $1",
+        // A genuinely STRANDED job — window closed 2h ago, on the real clock. This is the case
+        // where a human has a motive to force the edge (the guard wants paying, the customer wants
+        // out), so it is the one worth refusing, and it is deliberately the same shape the sweep
+        // closes. It is safe to leave overdue only because `close_overdue_arrived` never runs on
+        // the real clock in this suite — see `sweep_epoch`; a sweep test added with `Utc::now()`
+        // would close this row mid-assertion, which is exactly the flake that comment exists for.
+        let (id, customer_id, guard_id) = stranded_arrived_booking(
+            &pool,
+            "1 System Only Rd",
+            true,
+            true,
+            Utc::now() - chrono::Duration::hours(5),
         )
-        .bind(id)
-        .execute(&pool)
-        .await
-        .expect("future window");
+        .await;
 
         for (actor, is_admin, who) in [
             (guard_id, false, "assigned guard"),
