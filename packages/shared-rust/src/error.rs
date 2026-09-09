@@ -63,6 +63,19 @@ pub enum AppError {
     #[error("{0}")]
     Internal(String),
 
+    /// A 503 with a machine-readable sub-code: a DEPENDENCY this request cannot be answered
+    /// correctly without is unreachable, and answering anyway would be a lie. Distinct from
+    /// [`AppError::Internal`] (a 500 — "we broke") in both status and intent: 503 says
+    /// "temporarily can't, retry", which is what a client should show and what a proxy/monitor
+    /// should count separately from a crash.
+    ///
+    /// Use it ONLY where degrading silently would mislead the user (e.g. discovery cannot verify
+    /// which guards are online, so it must not present a list that implies it did). `code` is
+    /// `&'static str` so only a fixed, vetted set of sub-codes can be emitted; clients branch on
+    /// it to LOCALIZE the copy. Mirrors [`AppError::ConflictCode`].
+    #[error("{message}")]
+    ServiceUnavailable { code: &'static str, message: String },
+
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 
@@ -100,6 +113,9 @@ impl IntoResponse for AppError {
             // Same 409 as Conflict; the variant supplies its own machine-readable code.
             AppError::ConflictCode { code, .. } => (StatusCode::CONFLICT, *code),
             AppError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
+            // 503, not 500: a dependency is down, the request is retryable, and the variant
+            // supplies its own machine-readable code for the client to localize.
+            AppError::ServiceUnavailable { code, .. } => (StatusCode::SERVICE_UNAVAILABLE, *code),
             AppError::Database(e) => {
                 tracing::error!("Database error: {e}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "DATABASE_ERROR")
@@ -254,6 +270,33 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "CAPTCHA_INVALID");
         assert_eq!(json["error"]["message"], "captcha answer wrong");
+        assert_eq!(
+            json.as_object().unwrap().len(),
+            1,
+            "top-level is just `error`"
+        );
+    }
+
+    #[tokio::test]
+    async fn service_unavailable_returns_503_with_custom_code_and_same_envelope() {
+        // 503 (retryable, a dependency is down) — deliberately NOT the 500 `Internal` uses, so a
+        // client can tell "try again in a moment" from "this broke", and the sub-code lets it
+        // localize instead of showing the server's English text.
+        let err = AppError::ServiceUnavailable {
+            code: "PRESENCE_UNAVAILABLE",
+            message: "Could not check which guards are online".into(),
+        };
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "PRESENCE_UNAVAILABLE");
+        assert_eq!(
+            json["error"]["message"],
+            "Could not check which guards are online"
+        );
         assert_eq!(
             json.as_object().unwrap().len(),
             1,

@@ -170,6 +170,35 @@ class Booking {
   /// start action and the customer's "waiting for the guard" state.
   bool get isPaid => paidAt != null;
 
+  /// The instant the PAID window closes: `scheduledAt + hours`. `null` when either field is
+  /// missing (a snapshot from a backend predating them), which every caller must read as "unknown,
+  /// assume still open" — never as "closed".
+  ///
+  /// This is the SCHEDULED window, deliberately NOT the work clock (`workStartedAt + hours`,
+  /// which [WorkClock] tracks). The customer bought a span of wall-clock time; when the guard
+  /// happened to start does not move it.
+  DateTime? get scheduledEndAt {
+    final start = scheduledAt;
+    final h = hours;
+    if (start == null || h == null || h <= 0) return null;
+    return start.add(Duration(hours: h));
+  }
+
+  /// Whether the booked window has ENDED by [now] (QA #25).
+  ///
+  /// The one client-side mirror of the booking service's `is_expired` / `validate_keep_working`
+  /// boundary: STRICT `>`, so exactly at the window end it is still open. Past it the server
+  /// refuses to send the guard back to work (409 `JOB_WINDOW_CLOSED`) — the original job cannot
+  /// be extended, and more service means a NEW booking. Screens use it to stop OFFERING an action
+  /// the server will reject.
+  ///
+  /// Defaults to `false` when the window cannot be computed: a UI that wrongly hides "ให้ทำต่อ"
+  /// is worse than one that offers it and surfaces the server's typed, localized 409.
+  bool isPastScheduledWindow(DateTime now) {
+    final end = scheduledEndAt;
+    return end != null && now.toUtc().isAfter(end.toUtc());
+  }
+
   /// When the guard actually started work (server-stamped by `PUT /bookings/{id}/start`, the
   /// proration basis). `null` until started — and on snapshots from a backend predating the
   /// field. The AUTHORITATIVE anchor for the active-job countdown + check-in schedule: with it,

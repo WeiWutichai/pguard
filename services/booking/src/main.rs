@@ -144,7 +144,10 @@ async fn main() -> anyhow::Result<()> {
     // transactional outbox), so a swept cancel/complete emits its events durably. Ticks every
     // 60s and, per tick:
     //   * ISSUE 1 — cancels OPEN requests whose scheduled window has ended (`system_expired`);
-    //   * ISSUE 2 — auto-completes `pending_completion` jobs whose confirm grace has elapsed.
+    //   * ISSUE 2 — auto-completes `pending_completion` jobs whose confirm grace has elapsed;
+    //   * QA #25 — closes jobs stranded in `arrived` past that same window + grace (the guard
+    //     never pressed จบงาน, or the customer bounced them back), so `arrived` is no longer the
+    //     one active status nothing time-driven ever reaches.
     // A DB hiccup on one tick is logged and the loop continues (never crashes booking); per-row
     // failures are already swallowed inside the sweep fns.
     {
@@ -171,6 +174,24 @@ async fn main() -> anyhow::Result<()> {
                     Ok(n) if n > 0 => tracing::info!(count = n, "auto-completed overdue pending"),
                     Ok(_) => {}
                     Err(e) => tracing::error!(error = %e, "auto-complete sweep failed this tick"),
+                }
+                // QA #25 — the same grace: "how long past the booked window may a job stay open"
+                // is ONE product number, so the two closure paths never run on different clocks.
+                // The `needs_review` tally is logged inside the sweep (once per tick, not per row).
+                match repo::close_overdue_arrived(
+                    &sweep_db,
+                    now,
+                    domain::scheduling::AUTO_COMPLETE_GRACE_MINUTES as i32,
+                )
+                .await
+                {
+                    Ok(c) if c.completed > 0 || c.cancelled > 0 => tracing::info!(
+                        completed = c.completed,
+                        cancelled = c.cancelled,
+                        "closed stranded arrived bookings"
+                    ),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(error = %e, "arrived sweep failed this tick"),
                 }
             }
         });

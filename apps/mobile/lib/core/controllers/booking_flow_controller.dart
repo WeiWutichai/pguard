@@ -429,7 +429,11 @@ class BookingFlowController extends _$BookingFlowController {
   /// stale guard state and a newly-online guard would never appear until the app is killed. This is
   /// a discovery LIST refresh (available-guards), NOT the forbidden booking/assignment STATUS
   /// polling — it's driven by the screen's visibility, not a background timer on booking status.
-  Future<void> refreshGuards() async {
+  /// Returns whether the refresh actually landed. The caller needs to know: stamping an
+  /// "updated HH:mm" time after a FAILED refresh would date a list that never changed, hiding
+  /// staleness behind a fresh-looking clock — and staleness is exactly what matters here, since a
+  /// guard the list still shows may have switched off since it was fetched.
+  Future<bool> refreshGuards() async {
     try {
       final start = state.scheduledAt;
       final place = state.place;
@@ -447,8 +451,13 @@ class BookingFlowController extends _$BookingFlowController {
           .map(AvailableGuard.fromJson)
           .toList();
       state = state.copyWith(guards: list);
+      return true;
     } catch (_) {
       // Background refresh — keep the current list on error (a manual retry / re-entry recovers).
+      // Includes a 503 PRESENCE_UNAVAILABLE: the cards already on screen were verified when they
+      // were fetched, so holding them beats blanking mid-selection; the un-advanced timestamp is
+      // what tells the customer the list has stopped being confirmed.
+      return false;
     }
   }
 

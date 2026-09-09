@@ -357,18 +357,26 @@ paths:
       description: |
         booking owns discovery but none of the guard catalog (profile), reviews (rating), or
         live presence (presence). This lists the APPROVED guard catalog (read from profile's
-        `/internal/guards` over a service-JWT), RESTRICTED to guards who are currently ONLINE —
-        live per presence's `/internal/online-guards` (`is_online` AND a fresh GPS fix,
-        "พร้อมรับงาน") — and enriches each with the guard's live rating summary (read from
+        `/internal/guards` over a service-JWT), RESTRICTED to guards presence reports as
+        AVAILABLE via `/internal/online-guards` — they switched "พร้อมรับงาน" ON and hold a live
+        tracking session — and enriches each with the guard's live rating summary (read from
         rating's `POST /internal/guards/rating-summaries` in ONE batch call over all surviving
         guard ids, not a per-guard lookup).
 
         The three independent upstream reads (profile catalog, the local busy-guard DB, and
         presence) run CONCURRENTLY, so their latencies overlap rather than add serially.
 
-        Online filter: an OFFLINE approved guard is dropped from the list. FAIL-OPEN on
-        presence: if the presence consult errors/times out, the full approved list is returned
-        UNFILTERED (a presence hiccup must never blank discovery and block all bookings).
+        Availability filter: an approved guard who has not switched Online Status on is dropped,
+        even while their app streams GPS for an active job (that is a job-tracking session, not
+        consent to be offered new work).
+
+        FAIL-CLOSED on presence (this REVERSES an earlier fail-open): if the presence consult
+        errors or times out, the endpoint returns `503` with `error.code =
+        PRESENCE_UNAVAILABLE`. It does NOT return the approved list unfiltered — that silently
+        breaks the hard "a guard who is not online must not appear" rule and, since pguard is
+        pre-pay at accept, routes a PAYING customer to a guard who is not there. It also does not
+        return an empty list, which clients render as "nobody is available" — an equally
+        confident, equally wrong claim. Clients branch on the code to show a retryable error.
 
         Best-effort on ratings: if the batch rating lookup fails, every guard still appears with
         `average_rating: null` and `review_count: 0` (a guard with no visible reviews likewise).
@@ -408,7 +416,7 @@ paths:
           description: Meetup longitude (paired with `lat`).
       responses:
         '200':
-          description: Approved guards with rating summaries
+          description: Available guards with rating summaries
           content:
             application/json:
               schema:
@@ -420,6 +428,7 @@ paths:
                         type: array
                         items: { $ref: '#/components/schemas/AvailableGuard' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/PresenceUnavailable' }
 
   /services:
     get:
@@ -780,6 +789,17 @@ paths:
         `pguard.events.booking.completed` with `booked_hours` + `actual_seconds`, driving
         payment proration) or `reject` → back to `arrived` (the guard finishes). Customer/admin
         only; the booking must be `pending_completion`.
+
+        **NO EXTENSION (QA #25):** `reject` is allowed ONLY while the booked window is still open
+        (`now <= scheduled_at + hours`; the exact boundary still passes). Once the window has
+        closed, sending the guard back to work would EXTEND the original job, which the product
+        forbids — more service means a NEW booking through the normal flow. A late `reject` is
+        **409 `JOB_WINDOW_CLOSED`** (the app localizes the code: "งานนี้สิ้นสุดเวลาแล้ว — หากต้องการ
+        ใช้บริการต่อ กรุณาสร้างงานใหม่"). There is NO admin bypass: the worked duration of a job
+        closed after its window is capped at the scheduled end, so re-opening one past that point
+        can only produce unpaid guard work. `approve` stays available at any time, and if the
+        customer does nothing the background scheduler auto-completes the job 30 minutes past the
+        later of the scheduled end and the completion request.
       operationId: reviewCompletion
       security: [{ bearerAuth: [] }]
       parameters:
@@ -795,7 +815,14 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '409':
+          description: >-
+            Not reviewable from this state, or — with `error.code = JOB_WINDOW_CLOSED` — a
+            `reject` attempted after the booked window ended (QA #25). Clients branch on
+            `error.code` and localize it, never on the message.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorBody' }
 
   /bookings/{id}/cancel:
     put:
@@ -1116,11 +1143,35 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorBody' }
+    PresenceUnavailable:
+      description: |
+        `error.code = PRESENCE_UNAVAILABLE`. Discovery could not consult the presence service, so
+        it cannot tell which guards declared themselves available — and refuses to answer rather
+        than list guards it has not verified (or claim none exist). Retryable.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
 
   schemas:
     BookingStatus:
       type: string
-      description: Booking lifecycle status. See the state machine in src/domain/state.rs.
+      description: >-
+        Booking lifecycle status. See the state machine in src/domain/state.rs.
+
+
+        **Scheduler-driven closures (QA #25).** `arrived` is not an indefinite state: 30 minutes
+        past `scheduled_at + hours` the background sweep closes a booking still sitting there
+        (the guard never pressed จบงาน, or the customer sent them back), because the customer's
+        PRE-PAY would otherwise be held with no completion event to reconcile it. It closes to
+        `completed` when work was started AND attested by at least one check-in — billed on the
+        PAID WINDOW (`min(scheduled_at + hours, now) − work_started_at`, floored at zero), so the
+        grace is never billed, a late sweep tick never inflates the bill, and a guard who started
+        late is credited only the part of the window they were on site. It closes to `cancelled`
+        with `cancellation_reason = system_not_started` (no fee → payment full-refunds) when the
+        guard marked themselves on-site but never started, since there is no worked time to bill
+        at all. A job started but never attested is left untouched for a human — billing it would
+        pay a guard who bypassed the check-in rule, cancelling it would write off pay that may
+        just be a failed photo upload.
       enum:
         - requested
         - accepted
@@ -1498,6 +1549,11 @@ components:
             code degrades to "ไม่ระบุ"/"Not specified" instead of failing response decoding.
             null on active bookings, and on terminal rows created BEFORE the reason became
             mandatory (migration 0009).
+
+            Two SYSTEM codes are in neither endpoint's vocabulary — only the background scheduler
+            writes them: `system_expired` (an OPEN request whose window ended with no guard) and
+            `system_not_started` (QA #25 — an on-site guard who never started, closed 30 min past
+            the booked window; full refund, no fee).
         cancellation_note:
           type: string
           nullable: true

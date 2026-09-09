@@ -44,6 +44,8 @@ channels:
         $ref: '#/components/messages/GpsUpdate'
       heartbeat:
         $ref: '#/components/messages/Heartbeat'
+      availability:
+        $ref: '#/components/messages/Availability'
       ack:
         $ref: '#/components/messages/Ack'
       error:
@@ -53,7 +55,9 @@ channels:
       up to **1/sec** — faster updates are dropped silently server-side. A `Heartbeat`
       (`{"type":"heartbeat"}`) is a keep-alive only, rate-limited to 1/10s; it does NOT advance
       the guard's `recorded_at` and does NOT set the guard online (a guard who lost GPS but
-      holds the socket must not stay falsely "live"). **Server → client:** `Ack` after each
+      holds the socket must not stay falsely "live"). An `Availability`
+      (`{"type":"availability","available":bool}`) declares the guard's "พร้อมรับงาน" toggle for
+      THIS session — the only thing that puts them in the customer's guard-selection list. **Server → client:** `Ack` after each
       accepted update (carrying the persisted `recorded_at`), an error frame on a rejected
       update, and a WebSocket control **Ping** every 30s — the client MUST Pong within 10s or
       the server closes the zombie socket and marks the guard offline. Any disconnect marks the
@@ -74,6 +78,13 @@ operations:
     summary: Guard sends a keep-alive (≤ 1/10s; does not affect freshness/online).
     messages:
       - $ref: '#/channels/track/messages/heartbeat'
+  sendAvailability:
+    action: send
+    channel:
+      $ref: '#/channels/track'
+    summary: Guard declares whether they are accepting new work ("พร้อมรับงาน").
+    messages:
+      - $ref: '#/channels/track/messages/availability'
   receiveAck:
     action: receive
     channel:
@@ -155,6 +166,44 @@ components:
         - name: keepAlive
           payload:
             type: heartbeat
+    Availability:
+      name: availability
+      title: Availability declaration ("พร้อมรับงาน", client → server)
+      contentType: application/json
+      summary: |
+        The guard's Online-Status toggle, scoped to THIS connection. Offerability to customers
+        keys on this ALONE — never on the existence of the socket, which the app also opens to
+        stream GPS during an active job with the toggle off (offering those guards was the
+        QA 08/09/2569 defect).
+
+        Session-scoped on purpose: a disconnect revokes it server-side, so intent cannot outlive
+        the connection that declared it and a later session cannot inherit a stale "available".
+        The client therefore RE-SENDS its standing declaration on every (re)connect, and sends
+        `available:false` explicitly on a session it opened only to track a job.
+
+        `available` MUST be a boolean — a missing or non-boolean value is rejected with an error
+        frame rather than defaulted, since either default would misreport the guard's intent. Not
+        rate-limited (it is a user-intent edge, not a stream); the inbound frame-flood ceiling
+        still applies. No `ack` is sent.
+      payload:
+        type: object
+        required: [type, available]
+        properties:
+          type:
+            type: string
+            const: availability
+          available:
+            type: boolean
+            description: true = accepting new jobs (visible to customers); false = not offered.
+      examples:
+        - name: goOnline
+          payload:
+            type: availability
+            available: true
+        - name: goOffline
+          payload:
+            type: availability
+            available: false
     Ack:
       name: ack
       title: Update acknowledgment (server → client)

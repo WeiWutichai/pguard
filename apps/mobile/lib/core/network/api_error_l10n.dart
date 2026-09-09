@@ -19,6 +19,17 @@ String localizeApiError(bool isThai, ApiException e) {
         ? 'เครือข่ายขัดข้อง กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต'
         : 'Network error — please check your connection';
   }
+  // Checked BEFORE the blanket 5xx branch: this IS a 5xx (503), but it is a TYPED one whose copy
+  // can be specific and actionable ("try again" rather than "try again later"), and a customer
+  // stuck at guard selection deserves to know the retry is worth taking now.
+  if (e.code == 'PRESENCE_UNAVAILABLE') {
+    // GET /available-guards could not consult presence, so it refused to guess who is online
+    // rather than list guards who may not be working (and rather than show an empty list, which
+    // would read as "nobody is available" — a different lie). Recoverable: the retry is real.
+    return isThai
+        ? 'ระบบกำลังมีปัญหา ตรวจสอบเจ้าหน้าที่ที่พร้อมรับงานไม่ได้ กรุณาลองใหม่อีกครั้ง'
+        : "Couldn't check which guards are available. Please try again.";
+  }
   final status = e.statusCode;
   if (status != null && status >= 500) {
     return isThai
@@ -57,6 +68,14 @@ String localizeApiError(bool isThai, ApiException e) {
       return isThai
           ? 'งานนี้หมดเวลาแล้ว'
           : 'This job has expired — its scheduled time has already passed';
+    case 'JOB_WINDOW_CLOSED':
+      // QA #25: the customer tapped "ให้ทำต่อ" after the booked window ended. The original job
+      // cannot be extended — the copy must say what to do instead, not just what failed. Reached
+      // only as a backstop: the review panel already swaps the button for "สร้างงานใหม่" once the
+      // window closes (a stale screen, or a device clock behind the server's, still lands here).
+      return isThai
+          ? 'งานนี้สิ้นสุดเวลาแล้ว — หากต้องการใช้บริการต่อ กรุณาสร้างงานใหม่'
+          : 'This job’s scheduled time has ended — create a new booking to continue';
     case 'CHECK_IN_WINDOW_CLOSED':
       // G1: a check-in filed past the booked end + 30-min grace (an UPPER bound). Truthfully "the
       // window has closed" (too LATE) — never the old "not time yet" (too early) copy.

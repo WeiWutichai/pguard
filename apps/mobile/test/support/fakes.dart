@@ -377,11 +377,22 @@ class FakeChatMediaPicker implements ChatMediaPicker {
   }
 }
 
-/// Fake [PresenceFeed] — records the GPS samples streamed up and lets tests drive link state.
+/// Fake [PresenceFeed] — records the GPS samples streamed up, records every "พร้อมรับงาน"
+/// declaration in order, and lets tests drive link state.
 class FakePresenceFeed implements PresenceFeed {
   final StreamController<PresenceLink> _link =
       StreamController<PresenceLink>.broadcast();
   final List<GpsSample> sent = [];
+
+  /// Every [setAvailability] call, in order — so a test can assert not just the final value but
+  /// that opening a socket for a job never declared `true` along the way.
+  final List<bool> availabilityDeclarations = [];
+
+  /// The guard's standing declaration as the server would hold it: the last value declared, or
+  /// `false` when nothing has been declared on this feed (a fresh session is never available).
+  bool get declaredAvailable =>
+      availabilityDeclarations.isNotEmpty && availabilityDeclarations.last;
+
   bool connected = false;
   bool closed = false;
 
@@ -396,6 +407,10 @@ class FakePresenceFeed implements PresenceFeed {
 
   @override
   void sendLocation(GpsSample sample) => sent.add(sample);
+
+  @override
+  void setAvailability(bool available) =>
+      availabilityDeclarations.add(available);
 
   @override
   Future<void> close() async {

@@ -361,7 +361,7 @@ class _LiveBody extends ConsumerWidget {
                   // REJECT → back to arrived (the guard keeps working). Driven by the WS status
                   // frame, no polling.
                   if (booking.status == BookingStatus.pendingCompletion) ...[
-                    _CompletionReviewPanel(bookingId: booking.id),
+                    _CompletionReviewPanel(booking: booking),
                     const SizedBox(height: PgTokens.space4),
                   ],
                   _Actions(booking: booking, isOwner: isOwner),
@@ -1066,10 +1066,16 @@ class _MyEarningsButton extends ConsumerWidget {
 /// server-side settle/reconcile and routes to the job-completion summary) or REJECTS ("ให้ทำต่อ"
 /// → back to `arrived`, the guard keeps working; a snackbar confirms and the screen stays). Both
 /// hit `PUT /v1/bookings/{id}/review-completion { action }` via [BookingStatusController].
+///
+/// NO EXTENSION (QA #25): "ให้ทำต่อ" is offered ONLY while the booked window is still open. Past
+/// `scheduledAt + hours` the server refuses that reject with a typed 409 `JOB_WINDOW_CLOSED` — the
+/// original job cannot be prolonged; more service means a new booking — so the panel drops the
+/// button and points at the normal booking flow instead. The button must never outlive the rule:
+/// a UI that keeps offering it would be inviting the customer into an error.
 class _CompletionReviewPanel extends ConsumerStatefulWidget {
-  const _CompletionReviewPanel({required this.bookingId});
+  const _CompletionReviewPanel({required this.booking});
 
-  final String bookingId;
+  final Booking booking;
 
   @override
   ConsumerState<_CompletionReviewPanel> createState() =>
@@ -1085,7 +1091,7 @@ class _CompletionReviewPanelState
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     setState(() => _busy = true);
     final error = await ref
-        .read(bookingStatusControllerProvider(widget.bookingId).notifier)
+        .read(bookingStatusControllerProvider(widget.booking.id).notifier)
         .reviewCompletion(approve: approve);
     if (!mounted) return;
     setState(() => _busy = false);
@@ -1107,7 +1113,7 @@ class _CompletionReviewPanelState
       ref.invalidate(guardEarningsRowsProvider);
       // Settle is in flight (booking.completed → payment reconcile). Move to the summary; it
       // reads the reconciled payment and forces the customer on to rate the guard.
-      context.pushReplacement('/booking/${widget.bookingId}/summary');
+      context.pushReplacement('/booking/${widget.booking.id}/summary');
     } else {
       // Rejected → back to `arrived`; the guard continues. Stay on the live screen (the WS
       // `arrived` frame the server emits is idempotent with the folded state).
@@ -1124,6 +1130,11 @@ class _CompletionReviewPanelState
   @override
   Widget build(BuildContext context) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    // QA #25 — the booked window is what bounds "ให้ทำต่อ". Recomputed on every build (the live WS
+    // frame and the 1s report ticker both rebuild this subtree), so the button disappears within a
+    // beat of the window closing rather than at the next navigation.
+    final windowClosed =
+        widget.booking.isPastScheduledWindow(DateTime.now().toUtc());
     return Container(
       padding: const EdgeInsets.all(PgTokens.space4),
       decoration: BoxDecoration(
@@ -1150,10 +1161,18 @@ class _CompletionReviewPanelState
           ),
           const SizedBox(height: PgTokens.space2),
           Text(
-            isThai
-                ? 'เจ้าหน้าที่แจ้งว่างานเสร็จแล้ว — กรุณายืนยันเพื่อจบงาน หรือให้ทำงานต่อ'
-                : 'The guard has marked the job done. Confirm to finish, or ask them to '
-                    'keep working.',
+            windowClosed
+                // Say WHY the choice narrowed, and where to go for more service — the requirement
+                // is explicit that continuing means a NEW booking through the normal flow.
+                ? (isThai
+                    ? 'เจ้าหน้าที่แจ้งว่างานเสร็จแล้ว และงานนี้สิ้นสุดเวลาที่จองไว้แล้ว '
+                        'จึงต่อเวลางานเดิมไม่ได้ — หากต้องการใช้บริการต่อ กรุณาสร้างงานใหม่'
+                    : 'The guard has marked the job done, and this booking’s scheduled time has '
+                        'ended — it can’t be extended. Create a new booking to continue.')
+                : (isThai
+                    ? 'เจ้าหน้าที่แจ้งว่างานเสร็จแล้ว — กรุณายืนยันเพื่อจบงาน หรือให้ทำงานต่อ'
+                    : 'The guard has marked the job done. Confirm to finish, or ask them to '
+                        'keep working.'),
             style:
                 const TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
           ),
@@ -1169,7 +1188,13 @@ class _CompletionReviewPanelState
           SizedBox(
             height: 52,
             child: TextButton(
-              onPressed: _busy ? null : () => _review(approve: false),
+              // Past the window the secondary action becomes the sanctioned way to get more
+              // service: the normal booking flow (`/book`), not a reject the server would 409.
+              onPressed: _busy
+                  ? null
+                  : (windowClosed
+                      ? () => context.push('/book')
+                      : () => _review(approve: false)),
               style: TextButton.styleFrom(
                 foregroundColor: PgTokens.colorText,
                 shape: RoundedRectangleBorder(
@@ -1178,7 +1203,9 @@ class _CompletionReviewPanelState
                 ),
               ),
               child: Text(
-                isThai ? 'ให้ทำต่อ' : 'Keep working',
+                windowClosed
+                    ? (isThai ? 'สร้างงานใหม่' : 'Create a new booking')
+                    : (isThai ? 'ให้ทำต่อ' : 'Keep working'),
                 style: const TextStyle(
                     fontSize: 14.5, fontWeight: FontWeight.w600),
               ),

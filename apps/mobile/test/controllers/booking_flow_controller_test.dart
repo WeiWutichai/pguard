@@ -663,10 +663,39 @@ void main() {
     expect(state().guards.map((g) => g.guardId), ['g1']);
 
     fail = true;
-    await ctrl.refreshGuards(); // must NOT throw
+    expect(await ctrl.refreshGuards(), isFalse, // must NOT throw
+        reason:
+            'the caller must learn the refresh did not land, so it does not stamp an '
+            '"updated HH:mm" time over a list that was never re-verified');
     expect(state().guards.map((g) => g.guardId), ['g1'],
         reason: 'a failed background refresh leaves the shown list intact');
     expect(state().error, isNull,
         reason: 'a background refresh never flashes an error banner');
+  });
+
+  test(
+      'loadGuards surfaces PRESENCE_UNAVAILABLE as a localized, retryable error (never a list)',
+      () async {
+    // Discovery now fails CLOSED when presence is unreachable: the screen shows PgErrorState with
+    // a retry rather than an unverified list of guards or a bare "no guards available" empty
+    // state. Both of those would be confident claims the server explicitly refused to make.
+    final api = FakeApi(onGet: (_, __) async {
+      throw const ApiException(
+          message: 'Could not check which guards are available right now',
+          code: 'PRESENCE_UNAVAILABLE',
+          statusCode: 503);
+    });
+    final c = container(api: api);
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    BookingFlowState state() => c.read(bookingFlowControllerProvider);
+
+    expect(await ctrl.loadGuards(), isFalse);
+    expect(state().guards, isEmpty);
+    expect(state().busy, isFalse);
+    expect(state().error,
+        'ระบบกำลังมีปัญหา ตรวจสอบเจ้าหน้าที่ที่พร้อมรับงานไม่ได้ กรุณาลองใหม่อีกครั้ง',
+        reason:
+            'the customer sees an honest, retryable Thai message — not the server English, '
+            'and not silence');
   });
 }

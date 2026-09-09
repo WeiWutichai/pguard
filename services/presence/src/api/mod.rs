@@ -48,11 +48,15 @@ pub async fn list_locations<S: PresenceDeps>(
     }
     let now = Utc::now();
     // Heavy admin bulk read → read replica (C5.3); falls back to primary when unset.
-    let locations = repo::list_locations(state.db_read(), q.online_only)
-        .await?
-        .into_iter()
-        .map(|row| to_location(row, now))
-        .collect();
+    let locations = repo::list_locations(
+        state.db_read(),
+        q.online_only,
+        domain::session_liveness_cutoff(now),
+    )
+    .await?
+    .into_iter()
+    .map(|row| to_location(row, now))
+    .collect();
     Ok(Json(ApiResponse::success(locations)))
 }
 
@@ -219,30 +223,36 @@ fn build_replay(
     }
 }
 
-/// GET /internal/online-guards — the guards who are currently OFFERABLE for discovery
-/// (`is_online` alone), each with their latest fix position. Service-JWT'd ([`ServiceCaller`]) —
-/// never reachable from the public edge (the gateway blocks `/internal/`). Consumed by booking's
-/// `/available-guards` discovery to (a) drop OFFLINE approved guards from the customer list
-/// ("พร้อมรับงาน" filter) and (b) sort the surviving guards nearest-to-meetup (C2) using the
-/// returned coordinates.
+/// GET /internal/online-guards — the guards who are currently OFFERABLE for discovery, each with
+/// their latest fix position. Service-JWT'd ([`ServiceCaller`]) — never reachable from the public
+/// edge (the gateway blocks `/internal/`). Consumed by booking's `/available-guards` discovery to
+/// (a) restrict the customer's list to guards who actually said they are available and (b) sort
+/// the survivors nearest-to-meetup (C2) using the returned coordinates.
 ///
-/// Membership is `is_online` ONLY — NOT gated on GPS freshness. The mobile uplink is
-/// movement-gated, so a stationary online guard's last fix ages past the freshness window while
-/// the socket stays up; a freshness gate here would drop a connected, offerable guard from
-/// discovery (bug B). GPS freshness survives only as the green-dot `is_live` DISPLAY
-/// ([`domain::is_live`] in [`to_location`]), which does not gate this set. Narrow projection —
-/// id + position only, none of the heading/speed/accuracy the admin `/locations` bulk read
-/// carries (least-privilege).
+/// Membership (`repo::online_guard_locations`) is: the guard DECLARED "พร้อมรับงาน" on this
+/// session, a session is held, and that session has been heard from inside the liveness window
+/// ([`domain::session_liveness_cutoff`], the bound this handler passes down). The declared
+/// flag is the requirement's hard rule — a guard who never switched Online Status on is not in
+/// this set, even while streaming GPS for an active job (which is what made the old `is_online`-
+/// only membership offer them).
+///
+/// GPS freshness (`recorded_at`) is STILL not a predicate — the mobile uplink is movement-gated,
+/// so a stationary available guard's last fix ages past the freshness window while the socket
+/// stays up, and gating on it dropped connected, willing guards from discovery (bug B). Freshness
+/// survives only as the green-dot `is_live` DISPLAY ([`domain::is_live`] in [`to_location`]).
+/// Narrow projection — id + position only, none of the heading/speed/accuracy the admin
+/// `/locations` bulk read carries (least-privilege).
 #[tracing::instrument(skip(state), fields(caller = %caller.service))]
 pub async fn internal_online_guards<S: PresenceInternalDeps>(
     State(state): State<S>,
     caller: ServiceCaller,
 ) -> Result<Json<ApiResponse<OnlineGuards>>, AppError> {
-    let guards = repo::online_guard_locations(state.db())
-        .await?
-        .into_iter()
-        .map(|(guard_id, lat, lng)| OnlineGuard { guard_id, lat, lng })
-        .collect();
+    let guards =
+        repo::online_guard_locations(state.db(), domain::session_liveness_cutoff(Utc::now()))
+            .await?
+            .into_iter()
+            .map(|(guard_id, lat, lng)| OnlineGuard { guard_id, lat, lng })
+            .collect();
     Ok(Json(ApiResponse::success(OnlineGuards { guards })))
 }
 
@@ -282,11 +292,19 @@ async fn authorize_guard_read<S: PresenceDeps>(
     }
 }
 
-/// Assemble the response DTO, computing `is_live` (the 5-minute discovery freshness rule) from
-/// the stored `is_online` + `recorded_at` at read time.
+/// Assemble the response DTO, computing both liveness signals at read time:
+///   * `is_online` = the stored flag AND a LIVE session ([`domain::is_session_live`]). The stored
+///     flag is only ever cleared from inside the WS task, so a presence crash/redeploy leaves it
+///     `true` on every guard who was connected; ANDing the liveness window stops the admin map
+///     reporting those dead sessions as connected. The DTO's `is_online` therefore means "we have
+///     heard from this session recently", not "a row once said so".
+///   * `is_live` = the 5-minute GPS freshness rule (green dot), computed from the SAME corrected
+///     online signal so a ghost row can never render live either.
 fn to_location(row: GuardLocationRow, now: chrono::DateTime<Utc>) -> GuardLocation {
+    let is_online = row.is_online && domain::is_session_live(row.last_seen_at, now);
     GuardLocation {
-        is_live: domain::is_live(row.is_online, row.recorded_at, now),
+        is_live: domain::is_live(is_online, row.recorded_at, now),
+        available_for_work: row.available_for_work,
         guard_id: row.guard_id,
         lat: row.lat,
         lng: row.lng,
@@ -294,7 +312,7 @@ fn to_location(row: GuardLocationRow, now: chrono::DateTime<Utc>) -> GuardLocati
         heading: row.heading,
         speed: row.speed,
         recorded_at: row.recorded_at,
-        is_online: row.is_online,
+        is_online,
     }
 }
 

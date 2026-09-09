@@ -149,6 +149,17 @@ void main() {
     await flush();
     expect(feed.sent.length, sentAfterStart + 1,
         reason: 'the active job forwards live fixes to presence');
+
+    // QA 08/09/2569 — the heart of the defect. Streaming GPS for a job is not consent to be
+    // offered new work: the session must declare "not available", so the customer's
+    // guard-selection list never shows this guard.
+    expect(feed.availabilityDeclarations, isNotEmpty,
+        reason: 'a job-lease session states its availability explicitly');
+    expect(feed.availabilityDeclarations, everyElement(isFalse),
+        reason:
+            'a job lease must NEVER declare availability — that is what put guards with the '
+            'toggle OFF into the customer list');
+    expect(feed.declaredAvailable, isFalse);
   });
 
   test('releasing the last job lease tears the feed down (toggle still off)',
@@ -197,6 +208,36 @@ void main() {
     loc.emit(GpsSample(lat: 13.7, lng: 100.5, recordedAt: DateTime.utc(2026)));
     await flush();
     expect(feed.sent, isNotEmpty);
+
+    // …and the guard is WITHDRAWN from the customer's list even though the socket stays up. With
+    // a lease holding the connection open, this declaration is the only thing that removes them —
+    // without it "ปิดรับงาน" would be a button that changes nothing a customer can see.
+    expect(feed.declaredAvailable, isFalse,
+        reason:
+            'going offline withdraws the offer while the job keeps streaming');
+    expect(feed.availabilityDeclarations.last, isFalse);
+  });
+
+  test('the manual toggle is what declares availability to the server',
+      () async {
+    final feed = FakePresenceFeed();
+    final loc = FakeLocationService();
+    final c = makeContainer(feed, loc);
+    final ctrl = c.read(trackingControllerProvider.notifier);
+
+    // Before any toggle: nothing declared, so the server holds the fail-safe default.
+    expect(feed.declaredAvailable, isFalse);
+
+    await ctrl.goOnline();
+    await flush();
+    expect(feed.declaredAvailable, isTrue,
+        reason:
+            'switching Online Status on is what puts the guard in the customer list');
+
+    await ctrl.goOffline();
+    await flush();
+    expect(feed.availabilityDeclarations.last, isFalse,
+        reason: 'switching it off withdraws the guard');
   });
 
   test(

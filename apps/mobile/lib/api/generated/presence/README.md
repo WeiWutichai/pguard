@@ -13,11 +13,21 @@ v2 authz rules baked into the contract:
      history ONLY while they have an **active booking** with that guard (derived from
      `pguard.events.booking.*` — presence holds no cross-service FK and makes no synchronous
      cross-schema read). A guard may read its own; an admin may read any.
-  3. **Freshness.** `is_live` on the read DTOs is the green-dot staleness signal —
-     `is_online = true AND recorded_at > now() - interval '5 minutes'`. It is a DISPLAY
-     signal only: discovery OFFERABILITY (`/internal/online-guards`) keys on `is_online`
-     ALONE and is NOT gated on freshness (a movement-gated mobile uplink lets a stationary
-     online guard's last fix age past the window while its socket stays up).
+  3. **Offerability vs freshness — three DIFFERENT signals, never conflate them.**
+     * `available_for_work` — the guard switched \"พร้อมรับงาน\" ON, declared on the tracking
+       WebSocket (`{\"type\":\"availability\"}`) and scoped to that session. This ALONE decides
+       whether a guard appears in the customer's guard-selection list. A guard streaming GPS
+       for an ACTIVE JOB with the toggle off is connected but NOT offerable — before this
+       existed, offerability keyed on \"a GPS fix arrived\", which put such guards in front of
+       customers (QA 08/09/2569).
+     * SESSION liveness — the server has heard SOMETHING from the socket (fix, keep-alive or
+       Pong) within 2 minutes. Expires rows a presence crash/redeploy stranded as online, and
+       is why the read DTOs' `is_online` is computed, not a raw column read.
+     * GPS freshness — `is_live`, the green-dot DISPLAY signal
+       (`is_online AND recorded_at > now() - interval '5 minutes'`). It gates NOTHING: the
+       mobile uplink is movement-gated, so a stationary available guard's last fix ages past
+       the window while their socket is perfectly healthy.
+     Discovery OFFERABILITY (`/internal/online-guards`) = availability AND session liveness.
 
 Client-facing paths are served behind the gateway under `/v1`. Success responses use the
 standard `{ success, data }` envelope; errors use `ErrorBody`.

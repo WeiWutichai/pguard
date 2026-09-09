@@ -33,6 +33,27 @@ void main() {
           'ระบบขัดข้องชั่วคราว กรุณาลองใหม่ภายหลัง');
     });
 
+    test(
+        'PRESENCE_UNAVAILABLE (a TYPED 503) beats the generic 5xx copy and stays actionable',
+        () {
+      // GET /available-guards fails CLOSED when it cannot consult presence, rather than listing
+      // guards it could not verify are online (or showing an empty list, which reads as "nobody
+      // is working"). The customer is mid-booking, so the copy must name the retry, not defer it
+      // to "later" like the blanket 5xx line — which this must therefore win against.
+      const e = ApiException(
+          message: 'Could not check which guards are available right now',
+          code: 'PRESENCE_UNAVAILABLE',
+          statusCode: 503);
+      expect(localizeApiError(true, e),
+          'ระบบกำลังมีปัญหา ตรวจสอบเจ้าหน้าที่ที่พร้อมรับงานไม่ได้ กรุณาลองใหม่อีกครั้ง');
+      expect(localizeApiError(false, e),
+          "Couldn't check which guards are available. Please try again.");
+      expect(localizeApiError(true, e),
+          isNot('ระบบขัดข้องชั่วคราว กรุณาลองใหม่ภายหลัง'),
+          reason:
+              'the typed code must not fall through to the generic 5xx copy');
+    });
+
     test('known OTP sub-code → app-language copy', () {
       const e = ApiException(
           message: 'rejected', code: 'CAPTCHA_INVALID', statusCode: 400);

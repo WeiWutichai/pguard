@@ -1090,12 +1090,14 @@ pub async fn list_progress_reports<S: BookingDeps>(
 }
 
 /// GET /available-guards — discovery: the approved guard catalog (from profile) restricted to
-/// guards who are currently ONLINE (live per presence — "พร้อมรับงาน"), enriched with each
-/// guard's live rating summary (from rating). booking owns discovery but none of the catalog,
-/// reviews, or live presence, so it reads all three owners over service-JWT and aggregates here.
+/// guards who are currently AVAILABLE (per presence — they switched "พร้อมรับงาน" on), enriched
+/// with each guard's live rating summary (from rating). booking owns discovery but none of the
+/// catalog, reviews, or live presence, so it reads all three owners over service-JWT and
+/// aggregates here.
 ///
-/// ONLINE filter (the fix): an approved guard is only offered when presence reports them LIVE
-/// (`is_online` AND a fresh GPS fix). An offline-but-approved guard is dropped.
+/// AVAILABILITY filter: an approved guard is offered only when presence reports them offerable —
+/// they DECLARED availability on a live tracking session. A guard who never switched Online
+/// Status on is dropped even while their app is streaming GPS for an active job.
 ///
 /// BUSY filter (the fix): a guard who already holds an ACTIVE assignment (a booking in
 /// accepted/en_route/arrived/pending_completion assigned to them) is dropped too — a guard
@@ -1104,9 +1106,20 @@ pub async fn list_progress_reports<S: BookingDeps>(
 /// (the rest of the service is failing anyway), so we propagate rather than risk offering a busy
 /// guard.
 ///
-/// FAIL-OPEN on presence: if the presence consult errors/times out, the ONLINE filter is skipped
-/// (with a warning) — a presence hiccup must never blank discovery and block every booking. The
-/// BUSY filter still applies. The happy path filters by both.
+/// FAIL-CLOSED on presence — this REVERSES a previous deliberate fail-open, so here is the
+/// reasoning. The old rule returned the full approved list unfiltered when the presence consult
+/// failed, arguing a hiccup must never block bookings. Three things make that wrong:
+///   1. The requirement is a HARD rule ("must not appear"), and fail-open breaks it SILENTLY —
+///      it looks identical to a working filter, so nobody finds out except the customer.
+///   2. The costs are not symmetric. pguard is pre-pay at accept: a customer routed to a guard
+///      who is not there PAYS FIRST, then waits out a job nobody accepts, then needs a refund.
+///      Fail-closed costs one retry tap.
+///   3. Presence being down means the ONE fact this endpoint exists to establish is unknown. An
+///      answer that hides that is not a degraded answer, it is a wrong one.
+/// So the consult's error propagates as `503 PRESENCE_UNAVAILABLE` and the app shows a retryable
+/// "ระบบกำลังมีปัญหา" state. Note what this must NOT become: a bare empty list. That renders as
+/// "ยังไม่มีเจ้าหน้าที่ว่างในขณะนี้" — a confident claim that nobody is working, which is its own
+/// lie and sends the customer away. The typed error is the only honest option of the three.
 ///
 /// Best-effort on ratings: a guard whose rating lookup fails still appears (with no average /
 /// zero count) — one slow dependency never blanks the whole list. The ratings are read in ONE
@@ -1135,8 +1148,8 @@ pub async fn available_guards<S: DiscoveryDeps>(
     //     picked the slot), exclude only guards whose assignment OVERLAPS it (a guard busy 9–18 is
     //     still offered for 19–22); without a window, exclude any active-job guard (back-compat).
     //     Silently offering a busy guard would double-book them.
-    //   - presence (presence HTTP) — FAIL-OPEN: its Err is mapped to `None` after the join, so a
-    //     presence hiccup skips the online filter/sort rather than blanking discovery.
+    //   - presence (presence HTTP) — FAIL-CLOSED as a typed 503 (see the doc comment): without it
+    //     we cannot tell who declared themselves available, and guessing breaks a hard rule.
     let catalog_fut = state.guard_catalog().list_approved_guards();
     let busy_fut = async {
         match (window.scheduled_at, window.hours) {
@@ -1155,43 +1168,39 @@ pub async fn available_guards<S: DiscoveryDeps>(
     let guards = guards_res?; // FAIL-CLOSED on catalog
     let busy = busy_res?; // FAIL-CLOSED on busy
 
-    // `None` => FAIL-OPEN: presence was unreachable, so we do NOT apply the online filter (showing
-    // the approved list beats blocking all bookings) — and, with no positions, the nearest-first
-    // sort is skipped too. The value is a map guard_id → live (lat, lng): membership drives the
-    // online filter, the coords the sort.
-    let online: Option<std::collections::HashMap<Uuid, (f64, f64)>> = match presence_res {
-        Ok(map) => Some(map),
-        Err(e) => {
-            tracing::warn!(
-                "presence online-guards lookup failed: {e}; FAIL-OPEN (skipping the online filter)"
-            );
-            None
+    // The offerable set: guard_id → live (lat, lng). Membership drives the availability filter,
+    // the coords the nearest-first sort. FAIL-CLOSED — an unreachable presence surfaces as a
+    // retryable 503 the app localizes, NOT as an unfiltered list (which silently breaks the "a
+    // guard who is not online must not appear" rule) and NOT as an empty one (which tells the
+    // customer nobody is working). The upstream error text stays in the log, never in the reply.
+    let online: std::collections::HashMap<Uuid, (f64, f64)> = presence_res.map_err(|e| {
+        tracing::error!("presence online-guards lookup failed: {e}; failing discovery closed");
+        AppError::ServiceUnavailable {
+            code: "PRESENCE_UNAVAILABLE",
+            message: "Could not check which guards are available right now".to_string(),
         }
-    };
+    })?;
 
-    // Drop BUSY guards always; drop offline guards when presence answered (keep all online on
-    // fail-open). Filtering BEFORE the rating lookup also means we never spend a rating slot on
-    // guards we're about to hide.
+    // Drop BUSY guards and guards presence does not report as available. Filtering BEFORE the
+    // rating lookup also means we never spend a rating slot on guards we're about to hide.
     let filtered: Vec<_> = guards
         .into_iter()
         .filter(|g| !busy.contains(&g.user_id))
-        .filter(|g| online.as_ref().is_none_or(|m| m.contains_key(&g.user_id)))
+        .filter(|g| online.contains_key(&g.user_id))
         .collect();
 
     // Pair each surviving guard with its distance to the meetup (None when there is no meetup
-    // point, or the guard's live position is unknown — e.g. presence fail-open), then sort
-    // NEAREST-first (C2). The sort is STABLE, so with no meetup — or on tied distances — the
-    // catalog order is preserved (backward compatible); guards with no known location sort last.
+    // point), then sort NEAREST-first (C2). The sort is STABLE, so with no meetup — or on tied
+    // distances — the catalog order is preserved (backward compatible); guards with no known
+    // location sort last (unreachable now that membership implies a position, but the ordering
+    // stays total rather than relying on that).
     let mut prepared: Vec<(CatalogGuard, Option<f64>)> = filtered
         .into_iter()
         .map(|g| {
             let distance_m = meetup.and_then(|(mlat, mlng)| {
-                online
-                    .as_ref()
-                    .and_then(|m| m.get(&g.user_id))
-                    .map(|&(glat, glng)| {
-                        crate::domain::geo::haversine_meters(mlat, mlng, glat, glng)
-                    })
+                online.get(&g.user_id).map(|&(glat, glng)| {
+                    crate::domain::geo::haversine_meters(mlat, mlng, glat, glng)
+                })
             });
             (g, distance_m)
         })
@@ -3215,9 +3224,10 @@ mod tests {
         }
     }
 
-    /// Presence stub — `online` maps each LIVE guard to its position (guard_id → (lat, lng));
-    /// `down=true` makes the consult ERROR so the handler's FAIL-OPEN path (unfiltered list) is
-    /// exercised. Membership drives the online filter; the coords drive the nearest-first sort.
+    /// Presence stub — `online` maps each OFFERABLE guard (declared "พร้อมรับงาน" on a live
+    /// session) to its position (guard_id → (lat, lng)); `down=true` makes the consult ERROR so
+    /// the handler's FAIL-CLOSED path (a typed 503) is exercised. Membership drives the
+    /// availability filter; the coords drive the nearest-first sort.
     #[derive(Clone)]
     struct StubPresence {
         online: HashMap<Uuid, (f64, f64)>,
@@ -3673,49 +3683,28 @@ mod tests {
         )
     }
 
-    /// The fix: an OFFLINE approved guard (not in presence's live set) is excluded; an ONLINE
-    /// one is included.
+    /// The QA 08/09/2569 rule at the discovery seam: an approved guard presence does NOT report
+    /// as available (they never switched Online Status on) is excluded; one it does report is
+    /// included. Presence owns "who declared availability" — this proves booking honours it.
     #[tokio::test]
-    async fn available_guards_excludes_offline_includes_online() {
-        let online_guard = Uuid::new_v4();
-        let offline_guard = Uuid::new_v4();
+    async fn available_guards_excludes_guards_who_are_not_available() {
+        let available_guard = Uuid::new_v4();
+        let not_available_guard = Uuid::new_v4();
         let catalog = StubCatalog {
             guards: vec![
-                catalog_guard(online_guard, Some(3)),
-                catalog_guard(offline_guard, Some(7)),
+                catalog_guard(available_guard, Some(3)),
+                catalog_guard(not_available_guard, Some(7)),
             ],
         };
         let Some(ids) = discovery_guard_ids(
             catalog,
-            StubRater::good(online_guard),
+            StubRater::good(available_guard),
             StubPresence {
-                online: live_at_origin([online_guard]), // only the online guard is live
+                // Only the guard who declared "พร้อมรับงาน" is in presence's offerable set. The
+                // other may well be connected and streaming GPS for a job — presence keeps them
+                // out of this set, and discovery must not second-guess that.
+                online: live_at_origin([available_guard]),
                 down: false,
-            },
-        )
-        .await
-        else {
-            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
-            return;
-        };
-        assert_eq!(ids, vec![online_guard.to_string()], "offline guard dropped");
-    }
-
-    /// FAIL-OPEN: when the presence consult errors, the FULL approved list is returned
-    /// (unfiltered) — a presence hiccup must never block all bookings.
-    #[tokio::test]
-    async fn available_guards_fails_open_when_presence_down() {
-        let a = Uuid::new_v4();
-        let b = Uuid::new_v4();
-        let catalog = StubCatalog {
-            guards: vec![catalog_guard(a, Some(1)), catalog_guard(b, Some(2))],
-        };
-        let Some(ids) = discovery_guard_ids(
-            catalog,
-            StubRater::good(a),
-            StubPresence {
-                online: HashMap::new(), // would exclude EVERYONE if it were consulted...
-                down: true,             // ...but presence is down → fail-open → show all
             },
         )
         .await
@@ -3725,8 +3714,69 @@ mod tests {
         };
         assert_eq!(
             ids,
-            vec![a.to_string(), b.to_string()],
-            "presence down → fail-open: all approved guards shown unfiltered"
+            vec![available_guard.to_string()],
+            "a guard who has not switched Online Status on must not be offered"
+        );
+    }
+
+    /// FAIL-CLOSED (reversing the old fail-open): when the presence consult errors, discovery
+    /// returns `503 PRESENCE_UNAVAILABLE` rather than the unfiltered approved list.
+    ///
+    /// The two failure modes this rejects are BOTH silent lies to the customer: an unfiltered
+    /// list breaks the hard "must not appear" rule and routes a pre-paying customer to a guard
+    /// who is not there; a bare empty list renders as "ยังไม่มีเจ้าหน้าที่ว่างในขณะนี้", i.e. a
+    /// confident claim nobody is working. The typed code is what lets the app say
+    /// "ระบบกำลังมีปัญหา ลองใหม่อีกครั้ง" and offer a retry.
+    #[tokio::test]
+    async fn available_guards_fails_closed_with_typed_error_when_presence_down() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let catalog = StubCatalog {
+            guards: vec![catalog_guard(a, Some(1)), catalog_guard(b, Some(2))],
+        };
+        let Some(app) = discovery_router(
+            catalog,
+            StubRater::good(a),
+            StubPresence {
+                online: HashMap::new(),
+                down: true, // presence unreachable
+            },
+        )
+        .await
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/available-guards")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "presence down → 503, never an unfiltered (or silently empty) list"
+        );
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            v["error"]["code"], "PRESENCE_UNAVAILABLE",
+            "the app localizes on this code, so it is part of the contract"
+        );
+        assert!(
+            v.get("data").is_none(),
+            "no guard list may ride along with the failure"
         );
     }
 

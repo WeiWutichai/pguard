@@ -45,11 +45,15 @@ class WorkSessionStore {
   void endCheckIn(String bookingId) => _checkInInFlight.remove(bookingId);
 
   /// True once the CUSTOMER has REJECTED a completion for [bookingId] ("ให้ทำงานต่อ / keep
-  /// working"). The customer is explicitly asking for work PAST the booked duration, so the
-  /// booked-duration auto-complete must NOT re-fire — otherwise the reject-bounce remount of the
-  /// working panel would instantly re-request completion (undoing the reject + re-spamming the
-  /// "please review" push). Session-scoped: reset on app relaunch (a rare edge where a long-elapsed
-  /// job could auto-complete once more — acceptable vs. the reject ping-pong).
+  /// working"). The customer is asking for more of the time they BOOKED — typically after a guard
+  /// who finished early — so the work-clock auto-complete must NOT re-fire: otherwise the
+  /// reject-bounce remount of the working panel would instantly re-request completion (undoing the
+  /// reject + re-spamming the "please review" push). Session-scoped: reset on app relaunch (a rare
+  /// edge where a long-elapsed job could auto-complete once more — acceptable vs. the ping-pong).
+  ///
+  /// QA #25 bounds it: the caller ignores this flag once the BOOKED WINDOW (`scheduled_at + hours`)
+  /// has closed. Past that instant a reject is server-refused (409 `JOB_WINDOW_CLOSED`), so there
+  /// is no longer a customer choice to protect — only a guard left working unpaid.
   bool isAutoCompleteSuppressed(String bookingId) =>
       _autoCompleteSuppressed.contains(bookingId);
 

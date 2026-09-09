@@ -43,6 +43,19 @@ pub const REASON_OTHER: &str = "other";
 /// customer's cancellation notice localize to "หมดเวลา"/"expired" rather than a change-of-mind copy.
 pub const SYSTEM_EXPIRED_REASON: &str = "system_expired";
 
+/// SYSTEM cancellation reason — a booking the background scheduler closed because its window
+/// (plus the confirm grace) ended while it was still `arrived` and the guard had NEVER STARTED
+/// work (QA #25). Like [`SYSTEM_EXPIRED_REASON`] it is in NEITHER endpoint's vocabulary, so
+/// `validate_cancellation` can never yield it and only the sweep constructs it.
+///
+/// It is a CANCEL, not a completion, precisely because of the money: a job with no
+/// `work_started_at` has no worked duration, so completing it would hand payment
+/// `actual_seconds = None` — which payment reads as "keep the FULL charge" — and bill the customer
+/// in full for a job that never happened. Cancelling routes it to payment's cancellation consumer
+/// instead, which FULL-REFUNDS (the sweep's `is_admin = true` keeps `charge_cancel_fee` false, and
+/// `arrived` is outside the fee-bearing pre-arrival set anyway).
+pub const SYSTEM_NOT_STARTED_REASON: &str = "system_not_started";
+
 /// Reasons a CUSTOMER may cancel with (`PUT /bookings/{id}/cancel`).
 pub const CUSTOMER_CANCEL_REASONS: [&str; 4] = ["changed_plan", "mistake", "not_needed", "other"];
 
