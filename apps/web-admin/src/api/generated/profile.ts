@@ -16,7 +16,9 @@ export interface paths {
          * Update the caller's EXISTING guard profile (role=guard)
          * @description Updates an existing guard profile's editable fields. Unlike `POST` this never
          *     inserts: a caller with no profile yet receives 404. Requires role `guard`. The
-         *     read-back masks `account_number` (PDPA).
+         *     read-back masks `account_number` and `tax_id` (PDPA); re-sending either masked value is a
+         *     400. `tax_id` is COALESCE-merged (an omitted key keeps the stored value — see the schema);
+         *     every other field is overwritten.
          */
         put: operations["updateGuardProfile"];
         /**
@@ -30,7 +32,9 @@ export interface paths {
          *     Writes ONLY the profile schema: on first create `approval_status` is `pending`; a
          *     later upsert edits fields but NEVER changes the approval decision (only an admin does,
          *     via approve/reject), and `users.role` (identity-owned) is never touched. The read-back
-         *     masks `account_number` (PDPA).
+         *     masks `account_number` and `tax_id` (PDPA); re-sending either masked value is a 400.
+         *     `tax_id` is COALESCE-merged (an omitted key keeps the stored value — see the schema);
+         *     every other field is overwritten.
          */
         post: operations["upsertGuardProfile"];
         delete?: never;
@@ -417,9 +421,15 @@ export interface paths {
          * Set/replace the organization (company) profile (role=admin)
          * @description Upsert the single-row org (company) profile. Admin only (else 403). All fields optional
          *     (the admin saves incrementally). Validates a LENIENT `tax_id` (8–20 digits, spaces/hyphens
-         *     allowed — not a checksum) and bounded `company_name`/`address` lengths (≤ 500 chars); an
-         *     invalid value → 400. The acting admin is recorded server-side (`updated_by`). Returns the
-         *     stored row for read-back.
+         *     allowed — **shape only, no checksum**) and bounded `company_name`/`address` lengths
+         *     (≤ 500 chars); an invalid value → 400. The acting admin is recorded server-side
+         *     (`updated_by`). Returns the stored row for read-back.
+         *
+         *     The lenient rule is load-bearing, not an oversight: this is a JURISTIC-PERSON TIN, so the
+         *     citizen mod-11 checksum that gates a GUARD's `tax_id` does not apply — and because this
+         *     form re-sends the value it loaded, enforcing it would make the screen unsavable for any
+         *     install holding a non-conforming TIN, which in turn blocks the payout export (it 400s with
+         *     no company tax id). See `UpdateOrgSettingsRequest.tax_id`.
          */
         put: operations["adminUpdateOrgSettings"];
         post?: never;
@@ -681,6 +691,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/guard-profiles/{user_id}/payout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set a guard's payout fields — tax id + bank (role=admin)
+         * @description Sets the fields a guard PAYOUT needs but the guard's own registration never captures:
+         *     `tax_id` (the Thai national/tax id — both the PromptPay **NAT** proxy and the ภ.ง.ด.
+         *     recipient TIN) and the bank block. Without a `tax_id` no guard is payable, so
+         *     `POST /admin/payouts/export` returned 400 for every guard until an operator filled this in.
+         *
+         *     **Incremental (COALESCE-merge)** — a field that is ABSENT *or* `null` keeps the stored
+         *     value, exactly like `PUT /admin/payouts/config`: typing in a tax id can never blank out
+         *     bank details the operator never saw. Clearing a field is therefore NOT expressible here;
+         *     that belongs to the guard's own `PUT /profile/guard`.
+         *
+         *     `tax_id` carries the GUARD validation rule — 8–20 digits with separators, PLUS a Thai
+         *     national-id **mod-11 checksum on exactly 13 digits** (400 otherwise). 13 digits is the
+         *     PromptPay `NAT` proxy the payout file credits and PromptPay is irreversible, so a
+         *     well-shaped but mistyped id is rejected here rather than paid to a stranger. This is
+         *     STRICTER than the company `tax_id` on `PUT /admin/org-settings` — see that operation for
+         *     why the two rules must stay separate.
+         *
+         *     Admin only (else 403). 404 when that user has no guard profile — this never INSERTS one.
+         *     Returns the FULL (unmasked) profile so the operator can verify what they typed. The write
+         *     is PDPA §30-audited (`admin_update_guard_payout`) — it touches the two most sensitive
+         *     columns on the row, so "who set this national id" must be answerable.
+         */
+        put: operations["adminUpdateGuardPayout"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/customer-profiles/{user_id}/approve": {
         parameters: {
             query?: never;
@@ -800,6 +850,132 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/guards/{guard_id}/payout-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Guard payout destination + WHT recipient block (service-to-service)
+         * @description The guard PII payment needs to build ONE recipient row in the **guard payout** SCB file
+         *     (stream ③, `PPY`) and its ภ.ง.ด.53 recipient block: name, FULL tax id, address, phone.
+         *
+         *     **Auth:** service-JWT only (`serviceAuth`, aud `pguard-internal`). The gateway blocks
+         *     `/internal/` at the public edge, so this is unreachable from a user token.
+         *
+         *     **This is one of only TWO surfaces in the system that return an UNMASKED tax id** (the other
+         *     being the customer twin below, which returns none at all — so in practice it is the only
+         *     one). Every owner- and admin-facing profile read masks `tax_id` to its last 4 digits under
+         *     PDPA. Treat the response as PII: do not log it, do not forward it to a user-facing payload.
+         *
+         *     **404 semantics:** `404` when there is NO guard profile row for `guard_id` — it does NOT
+         *     mean "unpayable" and does not distinguish a deleted user from a never-onboarded one. The
+         *     caller must exclude that ONE guard from the batch with a reason and continue; a 404 must
+         *     never fail the whole payout run, and must never be retried into a blank recipient.
+         *
+         *     **`phone` is BEST-EFFORT and never an error.** It is the guard's LOGIN phone, resolved from
+         *     identity (profile does not store it — `emergency_contact_phone` is someone ELSE's number and
+         *     must never be paid to). It is the PromptPay `MOB` fallback proxy used when the guard has no
+         *     tax id (a Thai login number is 10 digits — `CPX_Toolkit_Reverse_Engineering.md`:2055,
+         *     PPY proxy by length: 15→`EWL`, 13→`NAT`, 10→`MOB`). If identity is unreachable, degraded, or
+         *     mid-rollout on an older build, `phone` comes back `null` and this endpoint still returns
+         *     **200** — an unrelated service being down must not fail a payout batch. The caller then
+         *     excludes that one guard (no tax id AND no phone ⇒ no destination).
+         *
+         *     **No normalisation.** Values are returned RAW, exactly as stored; payment owns
+         *     `digits_only` at its writer boundary. Two internal reads disagreeing on who normalises is
+         *     how a proxy silently changes LENGTH — and therefore proxy TYPE — between streams.
+         */
+        get: operations["internalGuardPayoutProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/internal/customers/{user_id}/payout-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Customer REFUND destination (service-to-service)
+         * @description The customer PII payment needs to build ONE recipient row in the **customer refund** SCB
+         *     file (stream ①, ยอดที่ต้องโอนคืนคนจ้าง, `PPY`): name, PromptPay phone, address.
+         *
+         *     **Auth:** service-JWT only (`serviceAuth`, aud `pguard-internal`); blocked at the public
+         *     edge like every `/internal/` route.
+         *
+         *     **Deliberately narrower than the guard twin: NO `tax_id` is returned at all.** A refund is
+         *     the customer's own money coming back, not income — no withholding, therefore no recipient
+         *     TIN, therefore nothing here that could leak one. Per the locked product decision the refund
+         *     destination is whatever REGISTRATION already captured; no new PII is collected for refunds.
+         *
+         *     **404 semantics:** `404` when there is NO customer profile row for `user_id`. Same rule as
+         *     the guard read — exclude that ONE customer from the batch with a reason and carry on; a 404
+         *     must never fail the refund run or become a transfer to a blank destination.
+         *
+         *     **`phone` is BEST-EFFORT and never an error.** `customer_profiles.contact_phone` wins when
+         *     set (it is the number the customer chose to be contacted on, so the refund and its
+         *     notification land in the same place); a blank/whitespace value falls back to the account's
+         *     LOGIN phone from identity, which is `NOT NULL` over there. The identity hop is only made
+         *     when `contact_phone` is blank. An identity outage degrades `phone` to whatever the profile
+         *     row holds — possibly `null` — and this endpoint still returns **200**. `phone: null` means
+         *     UNREFUNDABLE: exclude that customer, do not substitute anything.
+         *
+         *     **No normalisation** — RAW as stored, same contract as the guard read (see above for why).
+         */
+        get: operations["internalCustomerPayoutProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/internal/org-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Company (WHT payer) block for the bank files (service-to-service)
+         * @description The company block payment stamps onto every SCB file header and the ภ.ง.ด.53 payer section:
+         *     legal `company_name`, the company `tax_id` (payer TIN) and the registered `address`, read
+         *     from the single `profile.org_settings` row.
+         *
+         *     **Auth:** service-JWT only (`serviceAuth`, aud `pguard-internal`); blocked at the public
+         *     edge.
+         *
+         *     **NEVER 404 — that is the point.** When the org profile has never been saved this returns
+         *     **200** with all three fields `null` (the "unset" state), not a not-found. The caller can
+         *     then surface an actionable "configure the company profile first" error instead of a bare
+         *     404 that reads as a bug. A `tax_id` of `null` here is what makes
+         *     `POST /admin/payouts/export` refuse to produce a file.
+         *
+         *     The `tax_id` returned is the COMPANY (juristic-person) number, validated shape-only — see
+         *     `UpdateOrgSettingsRequest.tax_id` for why the citizen mod-11 checksum deliberately does not
+         *     apply to it. It is a tax REFERENCE, never a transfer destination, and is not masked on any
+         *     read (unlike a guard's).
+         */
+        get: operations["internalOrgSettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -826,7 +1002,24 @@ export interface components {
             /** @description Stored in full; masked on owner reads (PDPA). */
             account_number?: string | null;
             account_name?: string | null;
-            /** @description Thai national/tax id (ภ.ง.ด.53 TIN + PromptPay NAT). Stored in full; masked on owner reads (PDPA). */
+            /**
+             * @description Thai national/tax id (ภ.ง.ด. recipient TIN + PromptPay NAT proxy). Stored in full;
+             *     masked on owner reads (PDPA). Rejected with 400 if it still carries the read-time
+             *     mask (`*`).
+             *
+             *     **Validation (GUARD rule — stricter than the company one):** 8–20 digits with
+             *     spaces/hyphens allowed, PLUS a length-conditional Thai national-id **mod-11 checksum** —
+             *     a value of EXACTLY 13 digits must pass it or the write is a 400; 8–12 and 14–20 digits
+             *     are shape-only. 13 digits is what the bank export stamps as the PromptPay `NAT` proxy,
+             *     i.e. the account the payout is CREDITED to, so a shape-perfect but mistyped id would
+             *     irreversibly pay a stranger. The company tax id on `UpdateOrgSettingsRequest` is
+             *     deliberately NOT checksummed — see that schema.
+             *
+             *     **COALESCE-merged, unlike every other field here**: omitting the key PRESERVES the
+             *     stored value rather than clearing it, because an admin may have entered it via
+             *     `PUT /admin/guard-profiles/{user_id}/payout` and the mobile client never sends this key
+             *     — overwriting would silently make the guard unpayable again.
+             */
             tax_id?: string | null;
             /** @description Home address (v1 parity). */
             address?: string | null;
@@ -855,15 +1048,55 @@ export interface components {
             reason?: string | null;
         };
         /**
+         * @description The ADMIN payout-correction body for `PUT /admin/guard-profiles/{user_id}/payout`. All
+         *     fields optional and **merge-semantic**: a field left ABSENT — or sent as `null` — keeps the
+         *     stored value (the same convention as payment's `PUT /admin/payouts/config`). There is
+         *     deliberately no way to CLEAR a field here.
+         */
+        UpdateGuardPayoutRequest: {
+            /**
+             * @description Thai national/tax id — the PromptPay NAT proxy + the ภ.ง.ด. recipient TIN, i.e. the one
+             *     value that makes a guard payable.
+             *
+             *     **Validation (GUARD rule):** 8–20 digits with spaces/hyphens allowed, PLUS a
+             *     length-conditional Thai national-id **mod-11 checksum** — a value of EXACTLY 13 digits
+             *     must pass it (400 otherwise, with Thai copy naming PromptPay); 8–12 and 14–20 digits are
+             *     shape-only. This endpoint writes the account the payout file CREDITS, and PromptPay is
+             *     irreversible, so a mistyped-but-well-shaped 13-digit id is rejected rather than paid.
+             *     Identical to the guard rule on `UpsertGuardProfileRequest`, and deliberately STRICTER
+             *     than the company tax id on `UpdateOrgSettingsRequest`.
+             *
+             *     Also rejected with 400 if it still carries the read-time mask (`*`), since that can only
+             *     be a client re-PUTting what it displayed.
+             */
+            tax_id?: string | null;
+            bank_name?: string | null;
+            /** @description Rejected with 400 if it still carries the read-time mask (`*`). */
+            account_number?: string | null;
+            account_name?: string | null;
+        };
+        /**
          * @description The org (company) profile body for `PUT /admin/org-settings`. All fields optional (the
-         *     admin saves incrementally). `tax_id` is validated leniently (8–20 digits, spaces/hyphens
-         *     allowed — not a checksum); `company_name`/`address` are bounded to 500 chars. Sending
-         *     `null` CLEARS a field — which also removes it from every receipt issued afterwards.
+         *     admin saves incrementally). `tax_id` is validated LENIENTLY — shape only, no checksum (see
+         *     the field); `company_name`/`address` are bounded to 500 chars. Sending `null` CLEARS a
+         *     field — which also removes it from every receipt issued afterwards.
          */
         UpdateOrgSettingsRequest: {
             /** @description Legal entity name as registered — the issuer line of the tax invoice (ผู้ประกอบการ). */
             company_name?: string | null;
-            /** @description 8–20 digits (spaces/hyphens allowed); a Thai TIN is 13 digits. Legally required on a full tax invoice. */
+            /**
+             * @description The COMPANY's เลขประจำตัวผู้เสียภาษี. Legally required on a full tax invoice, and
+             *     required before `POST /admin/payouts/export` will produce a file.
+             *
+             *     **Validation (COMPANY rule — lenient, and deliberately NOT the guard rule):** 8–20
+             *     digits, spaces/hyphens allowed, **no checksum**. A Thai company TIN is 13 digits but is
+             *     a juristic-person number, so the citizen mod-11 check that gates the guard `tax_id`
+             *     (`UpsertGuardProfileRequest` / `UpdateGuardPayoutRequest`) has no authority over it.
+             *     Enforcing it here would also be self-defeating: the admin form re-sends the value it
+             *     loaded, so an install holding a non-conforming TIN could not save the company profile at
+             *     all — which blocks the payout export. Nothing is ever transferred TO this number; it is
+             *     a tax REFERENCE (ภ.ง.ด. payer block + receipts), never a payment destination.
+             */
             tax_id?: string | null;
             /** @description Registered address of the issuer — legally required on a full tax invoice. */
             address?: string | null;
@@ -908,6 +1141,68 @@ export interface components {
             /** @description True when all five credential documents are on file (derived; passbook excluded). */
             has_documents: boolean;
             documents: components["schemas"]["GuardDocumentPresence"];
+        };
+        /**
+         * @description Guard payout destination + ภ.ง.ด.53 recipient block, returned ONLY by
+         *     `GET /internal/guards/{guard_id}/payout-profile` (service-JWT). Every field is nullable
+         *     because the underlying columns are — payment decides what a missing value means for its own
+         *     file rather than this service guessing.
+         */
+        GuardPayoutProfile: {
+            /** @description The SCB recipient-name column; null when onboarding never captured it. */
+            full_name?: string | null;
+            /**
+             * @description The **UNMASKED** Thai national/tax id — the PromptPay `NAT` proxy (13 digits) money is
+             *     credited to AND the ภ.ง.ด.53 recipient TIN. This is the ONLY endpoint that returns it in
+             *     the clear; every owner/admin profile read masks it to the last 4 (PDPA). `null` when the
+             *     guard has none on file, in which case `phone` is the `MOB` fallback.
+             */
+            tax_id?: string | null;
+            /** @description Recipient address lines of the ภ.ง.ด.53 block. */
+            address?: string | null;
+            /**
+             * @description The guard's LOGIN phone from identity — the PromptPay `MOB` fallback proxy (10 digits)
+             *     used when `tax_id` is null. **BEST-EFFORT: `null` on an identity outage, never an
+             *     error** (the read still 200s). NOT `emergency_contact_phone`, which is someone else's
+             *     number and must never be paid to. Returned RAW; the caller normalises.
+             */
+            phone?: string | null;
+        };
+        /**
+         * @description Customer REFUND destination, returned ONLY by
+         *     `GET /internal/customers/{user_id}/payout-profile` (service-JWT). Deliberately NARROWER than
+         *     `GuardPayoutProfile`: no `tax_id` at all, because a refund is the customer's own money
+         *     coming back — no withholding, so no TIN to return or leak.
+         */
+        CustomerPayoutProfile: {
+            /** @description The SCB recipient-name column; null when registration never captured it. */
+            full_name?: string | null;
+            /**
+             * @description The PromptPay `MOB` proxy (10 digits): `customer_profiles.contact_phone` when set, else
+             *     the account's LOGIN phone from identity. **BEST-EFFORT: an identity outage degrades this
+             *     to whatever the profile row holds (possibly `null`) and the read still 200s.** `null`
+             *     means UNREFUNDABLE — exclude the customer, never substitute. Returned RAW; the caller
+             *     normalises.
+             */
+            phone?: string | null;
+            address?: string | null;
+        };
+        /**
+         * @description The company / WHT-payer block returned by `GET /internal/org-settings` (service-JWT). A slim
+         *     mirror of `OrgSettings` WITHOUT `updated_at` (the payer block has no use for the bookkeeping
+         *     timestamp). All-`null` is the legitimate "never saved" state, returned as 200 — not a 404.
+         */
+        InternalOrgSettings: {
+            /** @description Legal payer name on the SCB file header + ภ.ง.ด.53; null blocks the export. */
+            company_name?: string | null;
+            /**
+             * @description The COMPANY (juristic-person) payer TIN. Shape-validated only — the citizen mod-11
+             *     checksum deliberately does not apply here (see `UpdateOrgSettingsRequest.tax_id`).
+             *     `null` is what makes `POST /admin/payouts/export` refuse to produce a file.
+             */
+            tax_id?: string | null;
+            /** @description Registered payer address for the ภ.ง.ด.53 header. */
+            address?: string | null;
         };
         /** @description Per-credential PRESENCE (has / doesn''t-have) for the five customer-relevant credential documents. Booleans ONLY — a `true` means the document is on record; the file bytes never cross the wire (they stay owner/admin-only). Passbook is excluded (banking, not a credential). */
         GuardDocumentPresence: {
@@ -2267,6 +2562,28 @@ export interface operations {
             409: components["responses"]["Conflict"];
         };
     };
+    adminUpdateGuardPayout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateGuardPayoutRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["GuardProfileFullOk"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
     adminApproveCustomer: {
         parameters: {
             query?: never;
@@ -2377,6 +2694,109 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
                         data?: string[];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    internalGuardPayoutProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                guard_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The guard's payout destination + WHT recipient block (fields may be null) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["GuardPayoutProfile"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /**
+             * @description No guard profile row for this id. Exclude this ONE guard from the batch with a reason;
+             *     never fail the run and never pay a blank recipient.
+             */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    internalCustomerPayoutProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The customer's refund destination (fields may be null; a null `phone` = unrefundable) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["CustomerPayoutProfile"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /**
+             * @description No customer profile row for this id. Exclude this ONE customer from the batch with a
+             *     reason; never fail the run and never transfer to a blank destination.
+             */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    internalOrgSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /**
+             * @description The company/WHT-payer block. All-`null` when the org profile was never saved — a
+             *     legitimate 200, not an error.
+             */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["InternalOrgSettings"];
                     };
                 };
             };

@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { AlertTriangle, CircleAlert, CircleCheck, Loader2, RefreshCw, Shield, Star } from "lucide-react";
 
 import type { components as bookingComponents } from "@/api/generated/booking";
@@ -54,9 +55,22 @@ const ACTIVE_BOOKING_STATUSES = new Set([
  * pagination params (repo caps it at 200), so paging + search both slice the fetched list. */
 const PAGE_SIZE = 8;
 
+/** The payout screen's "จ่ายไม่ได้" table links here as `/guards?guard=<user_id>` so the admin can
+ *  go fix the missing tax id / bank block. Read via useSearchParams → needs a Suspense boundary. */
 export default function GuardsPage() {
+  return (
+    <Suspense fallback={null}>
+      <GuardsPageBody />
+    </Suspense>
+  );
+}
+
+function GuardsPageBody() {
   const { t, lang } = useLanguage();
   const c = COPY[lang];
+  // `?guard=<user_id>` deep link (from the payout screen's excluded table): pre-filter the table to
+  // that guard AND open their detail modal, so "จ่ายไม่ได้ → fix it" is one click, not a search.
+  const deepLinkId = useSearchParams().get("guard");
   const [guards, setGuards] = useState<GuardProfile[]>([]);
   const [loc, setLoc] = useState<GuardLocation[]>([]);
   const [bk, setBk] = useState<Booking[]>([]);
@@ -67,7 +81,10 @@ export default function GuardsPage() {
   const [hasError, setHasError] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [selected, setSelected] = useState<GuardProfile | null>(null);
-  const [query, setQuery] = useState("");
+  /** Set once the admin closes the deep-linked modal, so it doesn't spring back open on rerender
+   *  (the URL still carries `?guard=`; we don't rewrite it — a reload should reopen it). */
+  const [deepLinkDismissed, setDeepLinkDismissed] = useState(false);
+  const [query, setQuery] = useState(() => deepLinkId ?? "");
   const [statusFilter, setStatusFilter] = useState<"all" | GuardStatus>("all");
   const [page, setPage] = useState(1);
 
@@ -156,6 +173,35 @@ export default function GuardsPage() {
     });
   }, [guards, query, statusFilter, statusOf]);
 
+  // Deep-linked guard: DERIVED from the loaded list (no setState-in-effect). The modal shows an
+  // explicitly picked row first, otherwise the deep-linked one until the admin closes it.
+  const deepLinkGuard =
+    deepLinkId && !deepLinkDismissed
+      ? (guards.find((g) => g.user_id === deepLinkId) ?? null)
+      : null;
+  const detail = selected ?? deepLinkGuard;
+  // Followed the link but that guard isn't in the approved list (still pending / rejected) — say
+  // so, instead of leaving the admin staring at an empty table with a uuid in the search box.
+  const deepLinkMissing =
+    Boolean(deepLinkId) &&
+    !loading &&
+    !hasError &&
+    !deepLinkGuard &&
+    !deepLinkDismissed &&
+    query.trim() === deepLinkId;
+
+  // A payout save returns the base profile shape; the list rows carry the admin extras
+  // (created_at, login_phone), so MERGE rather than replace — otherwise the edited row would lose
+  // them and the table behind the modal would go stale/blank on those columns.
+  const applyPayoutSave = useCallback((saved: GuardProfile) => {
+    setGuards((prev) =>
+      prev.map((g) => (g.user_id === saved.user_id ? { ...g, ...saved } : g)),
+    );
+    setSelected((prev) =>
+      prev && prev.user_id === saved.user_id ? { ...prev, ...saved } : prev,
+    );
+  }, []);
+
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount);
   const visible = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
@@ -181,6 +227,16 @@ export default function GuardsPage() {
         >
           <AlertTriangle className="size-4 flex-none" />
           {t("guards.error")}
+        </div>
+      )}
+
+      {deepLinkMissing && (
+        <div
+          role="alert"
+          className="mb-4 flex items-center gap-2 rounded-lg border border-border-strong bg-sunken px-4 py-2.5 text-sm text-text-strong"
+        >
+          <AlertTriangle className="size-4 flex-none" />
+          {c.deepLinkMissing}
         </div>
       )}
 
@@ -336,7 +392,16 @@ export default function GuardsPage() {
         )}
       </Panel>
 
-      {selected && <GuardDetailModal guard={selected} onClose={() => setSelected(null)} />}
+      {detail && (
+        <GuardDetailModal
+          guard={detail}
+          onClose={() => {
+            setSelected(null);
+            setDeepLinkDismissed(true);
+          }}
+          onPayoutSaved={applyPayoutSave}
+        />
+      )}
     </div>
   );
 }

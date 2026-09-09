@@ -351,7 +351,13 @@ mod e2e_tests {
         // 0) PRE-PAY the estimate up front (500×4×1 + 0 = 2000.00 subtotal → 2140.00 with 7% VAT)
         //    — the settle basis.
         let terms = crate::domain::ChargeTerms::new(
-            crate::domain::PriceBreakdown::from_subtotal(dec("2000.00")),
+            // 500 ฿/h × 4h × 1 guard, no tip → a VAT-exclusive subtotal of 2000.00.
+            crate::domain::PricingInputs {
+                base_fee: dec("500.00"),
+                booked_hours: 4,
+                guard_count: 1,
+                tip: Decimal::ZERO,
+            },
             Decimal::ZERO,
             Decimal::ZERO,
         );

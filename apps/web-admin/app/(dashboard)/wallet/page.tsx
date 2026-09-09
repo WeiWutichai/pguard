@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   AlertTriangle,
   CircleDollarSign,
@@ -160,10 +161,18 @@ export default function WalletPage() {
         />
       </KpiGrid>
 
-      {/* The design's manual refund queue contradicts v2's auto-refund — honest gap note. */}
+      {/* This ledger REPORTS what is owed; `/refunds` is where it is sent. The note used to say
+          "there is no manual refund queue — awaiting an API"; there is one now (the SCB refund
+          export), so leaving that would have pointed an admin away from the only screen that pays
+          a "รอคืน" row back. */}
       <div className="mb-4 flex items-start gap-2 rounded-lg border border-border bg-sunken px-4 py-2.5 text-[12.5px] text-muted">
-        <Badge tone="gray">{c.awaitingApi}</Badge>
-        <span>{c.refundQueueGap}</span>
+        <RotateCcw className="mt-0.5 size-3.5 flex-none" />
+        <span>
+          {c.refundActionNote}{" "}
+          <Link href="/refunds" className="font-medium text-brand-int hover:underline">
+            {c.refundActionLink}
+          </Link>
+        </span>
       </div>
 
       <div className="mb-4 flex flex-wrap items-center gap-2.5">

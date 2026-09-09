@@ -9,12 +9,14 @@ import {
   ChartLine,
   CircleUser,
   FileText,
+  Landmark,
   LayoutDashboard,
   ListChecks,
   Map as MapIcon,
   MessageSquare,
   Phone,
   LifeBuoy,
+  RotateCcw,
   Route as RouteIcon,
   Send,
   Settings,
@@ -71,7 +73,15 @@ const GROUPS: readonly NavGroup[] = [
       { href: "/tasks", icon: ListChecks, label: "nav.tasks" },
       { href: "/bookings", icon: Briefcase, label: "nav.bookings" },
       { href: "/wallet", icon: Wallet, label: "nav.wallet" },
+      // The THREE SCB bank-file screens sit together, and after the ledger they act on: one file per
+      // money stream (guards out, customers back, the platform's own cut swept in), never a tab on
+      // each other — a `BCHDET` carries exactly one product code, so the three exports can never
+      // share a file. `/deductions` is last because it is the only one that pays nobody: it moves
+      // the company's money between the company's accounts, and it also hosts the two TAX REPORTS,
+      // which are filings rather than transfers.
       { href: "/payouts", icon: Banknote, label: "nav.payouts" },
+      { href: "/refunds", icon: RotateCcw, label: "nav.refunds" },
+      { href: "/deductions", icon: Landmark, label: "nav.deductions" },
       { href: "/pricing", icon: Tag, label: "nav.pricing" },
     ],
   },

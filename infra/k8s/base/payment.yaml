@@ -47,6 +47,14 @@ spec:
           env:
             - name: BOOKING_URL
               value: "http://booking:3005"
+            # Every BANK-EXPORT stream reads profile's service-JWT'd internal endpoints: the guard
+            # payout needs guard PII + the company ภ.ง.ด. payer block, the customer refund needs the
+            # registration phone, and the platform-cut sweep needs the company NAME for the single
+            # OAT credit line. Without this the reader defaults to localhost and every preview/export
+            # fails inside the pod — the same footgun that broke the payout feature on staging (the
+            # docker-compose stack has carried this since PR #267; the manifest did not).
+            - name: PROFILE_URL
+              value: "http://profile:3002"
             # Per-service NATS credentials (subject ACL — see contracts/asyncapi/nats-acl.md).
             - name: NATS_USER
               value: "payment"

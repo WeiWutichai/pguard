@@ -22,7 +22,7 @@ part 'upsert_guard_profile_request.g.dart';
 /// * [bankName] 
 /// * [accountNumber] - Stored in full; masked on owner reads (PDPA).
 /// * [accountName] 
-/// * [taxId] - Thai national/tax id (ภ.ง.ด.53 TIN + PromptPay NAT). Stored in full; masked on owner reads (PDPA).
+/// * [taxId] - Thai national/tax id (ภ.ง.ด. recipient TIN + PromptPay NAT proxy). Stored in full; masked on owner reads (PDPA). Rejected with 400 if it still carries the read-time mask (`*`).  **Validation (GUARD rule — stricter than the company one):** 8–20 digits with spaces/hyphens allowed, PLUS a length-conditional Thai national-id **mod-11 checksum** — a value of EXACTLY 13 digits must pass it or the write is a 400; 8–12 and 14–20 digits are shape-only. 13 digits is what the bank export stamps as the PromptPay `NAT` proxy, i.e. the account the payout is CREDITED to, so a shape-perfect but mistyped id would irreversibly pay a stranger. The company tax id on `UpdateOrgSettingsRequest` is deliberately NOT checksummed — see that schema.  **COALESCE-merged, unlike every other field here**: omitting the key PRESERVES the stored value rather than clearing it, because an admin may have entered it via `PUT /admin/guard-profiles/{user_id}/payout` and the mobile client never sends this key — overwriting would silently make the guard unpayable again. 
 /// * [address] - Home address (v1 parity).
 /// * [emergencyContactName] 
 /// * [emergencyContactPhone] - Thai national format (≥10 digits, leading 0).
@@ -57,7 +57,7 @@ abstract class UpsertGuardProfileRequest implements Built<UpsertGuardProfileRequ
   @BuiltValueField(wireName: r'account_name')
   String? get accountName;
 
-  /// Thai national/tax id (ภ.ง.ด.53 TIN + PromptPay NAT). Stored in full; masked on owner reads (PDPA).
+  /// Thai national/tax id (ภ.ง.ด. recipient TIN + PromptPay NAT proxy). Stored in full; masked on owner reads (PDPA). Rejected with 400 if it still carries the read-time mask (`*`).  **Validation (GUARD rule — stricter than the company one):** 8–20 digits with spaces/hyphens allowed, PLUS a length-conditional Thai national-id **mod-11 checksum** — a value of EXACTLY 13 digits must pass it or the write is a 400; 8–12 and 14–20 digits are shape-only. 13 digits is what the bank export stamps as the PromptPay `NAT` proxy, i.e. the account the payout is CREDITED to, so a shape-perfect but mistyped id would irreversibly pay a stranger. The company tax id on `UpdateOrgSettingsRequest` is deliberately NOT checksummed — see that schema.  **COALESCE-merged, unlike every other field here**: omitting the key PRESERVES the stored value rather than clearing it, because an admin may have entered it via `PUT /admin/guard-profiles/{user_id}/payout` and the mobile client never sends this key — overwriting would silently make the guard unpayable again. 
   @BuiltValueField(wireName: r'tax_id')
   String? get taxId;
 

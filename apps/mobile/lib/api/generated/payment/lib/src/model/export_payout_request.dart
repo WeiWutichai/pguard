@@ -16,6 +16,7 @@ part 'export_payout_request.g.dart';
 /// * [guardIds] - Pay only these guards (1–500). Null = every payable guard in the window.
 /// * [from] - Inclusive first day jobs were finished (Thai local day).
 /// * [to] - Inclusive last day jobs were finished (Thai local day).
+/// * [valueDate] - The batch's effective/value date. Omit for today in Asia/Bangkok rolled forward off a weekend; set it to schedule a later settlement day or to step over a Thai public holiday (the platform has no holiday calendar). A PAST date is a 400 — SCB rejects a back-dated batch outright. 
 @BuiltValue()
 abstract class ExportPayoutRequest implements Built<ExportPayoutRequest, ExportPayoutRequestBuilder> {
   /// Pay only these guards (1–500). Null = every payable guard in the window.
@@ -29,6 +30,10 @@ abstract class ExportPayoutRequest implements Built<ExportPayoutRequest, ExportP
   /// Inclusive last day jobs were finished (Thai local day).
   @BuiltValueField(wireName: r'to')
   Date? get to;
+
+  /// The batch's effective/value date. Omit for today in Asia/Bangkok rolled forward off a weekend; set it to schedule a later settlement day or to step over a Thai public holiday (the platform has no holiday calendar). A PAST date is a 400 — SCB rejects a back-dated batch outright. 
+  @BuiltValueField(wireName: r'value_date')
+  Date? get valueDate;
 
   ExportPayoutRequest._();
 
@@ -71,6 +76,13 @@ class _$ExportPayoutRequestSerializer implements PrimitiveSerializer<ExportPayou
       yield r'to';
       yield serializers.serialize(
         object.to,
+        specifiedType: const FullType(Date),
+      );
+    }
+    if (object.valueDate != null) {
+      yield r'value_date';
+      yield serializers.serialize(
+        object.valueDate,
         specifiedType: const FullType(Date),
       );
     }
@@ -117,6 +129,13 @@ class _$ExportPayoutRequestSerializer implements PrimitiveSerializer<ExportPayou
             specifiedType: const FullType(Date),
           ) as Date;
           result.to = valueDes;
+          break;
+        case r'value_date':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(Date),
+          ) as Date;
+          result.valueDate = valueDes;
           break;
         default:
           unhandled.add(key);

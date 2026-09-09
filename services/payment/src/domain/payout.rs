@@ -16,6 +16,8 @@ use rust_decimal::Decimal;
 use shared::error::AppError;
 use uuid::Uuid;
 
+use crate::domain::settlement;
+
 /// WHICH guards, over WHICH finished-job window, this payout run covers. Both parts are optional
 /// and independent: `None`/`None` = the default "pay the WHOLE unpaid backlog, everyone" the export
 /// has always done. `guard_ids = Some([..])` is the admin cherry-picking recipients on the preview
@@ -34,7 +36,12 @@ pub struct PayoutSelection {
 }
 
 /// Upper bound on how many guards ONE export may name — a longer list is a client bug, not an
-/// admin action (and the file is uploaded to SCB by hand). The backlog-wide default is unbounded.
+/// admin action (and the file is uploaded to SCB by hand).
+///
+/// The backlog-wide default names no guards at all, and its size is bounded at the REPO instead:
+/// `repo::unpaid_payout_rows` refuses a run larger than `repo::MAX_PAYOUT_BACKLOG_ROWS` with a typed
+/// "narrow the window" 400 rather than truncating it — a short payout file leaves guards unpaid while
+/// looking complete. A runaway guard on an I/O query belongs with the query; this module stays pure.
 pub const MAX_SELECTED_GUARDS: usize = 500;
 
 impl PayoutSelection {
@@ -65,6 +72,42 @@ impl PayoutSelection {
     }
 }
 
+/// Upper bound on how many bookings ONE per-item void may name. Same reasoning as
+/// [`MAX_SELECTED_GUARDS`]: a longer list is a client bug, and this is an admin correcting the
+/// handful of credit lines the bank could not deliver, never a bulk operation.
+pub const MAX_VOIDED_ITEMS: usize = 500;
+
+/// Normalise the `booking_ids` of a per-item void into the list the repo may act on: DE-DUPLICATED
+/// (order preserved), non-empty, and within [`MAX_VOIDED_ITEMS`].
+///
+/// De-duplicating is not tidiness — it is what keeps the repo's "every named booking must have been
+/// returned" count honest. `[b, b]` updates ONE row, so a repo comparing `rows_affected` against the
+/// requested length would see 1 ≠ 2 and refuse a request that is really just clumsy; and the
+/// alternative (not comparing at all) would let a genuinely wrong id pass silently.
+///
+/// An EMPTY list is refused rather than treated as "all of them": the whole-batch void is a
+/// different, more dangerous action with its own endpoint, and a client bug must never escalate into
+/// it. PURE: no I/O, so the API layer validates before touching the DB.
+pub fn normalize_voided_booking_ids(ids: &[Uuid]) -> Result<Vec<Uuid>, AppError> {
+    if ids.is_empty() {
+        return Err(AppError::BadRequest(
+            "เลือกงานอย่างน้อย 1 รายการที่ต้องการดึงกลับเข้าคิวรอจ่าย".to_string(),
+        ));
+    }
+    if ids.len() > MAX_VOIDED_ITEMS {
+        return Err(AppError::BadRequest(format!(
+            "ดึงงานกลับได้ไม่เกิน {MAX_VOIDED_ITEMS} รายการต่อครั้ง"
+        )));
+    }
+    let mut out: Vec<Uuid> = Vec::with_capacity(ids.len());
+    for id in ids {
+        if !out.contains(id) {
+            out.push(*id);
+        }
+    }
+    Ok(out)
+}
+
 /// The three payout figures for one completed job. `transfer` is what is actually PromptPay-ed to
 /// the guard; `income`/`wht` are what the ภ.ง.ด.53 certificate records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +120,13 @@ pub struct PayoutAmounts {
 /// Compute one job's payout figures. `commission_percent` is the per-service snapshot (`None`, or a
 /// job that predates commissions, → 0%; clamped to `0..=100` defensively). `wht_rate_percent` is the
 /// batch withholding rate (0 → no WHT withheld, `wht == 0`, `transfer == income`).
+///
+/// The gross and the commission come from [`settlement::guard_gross`] / [`settlement::commission_on`]
+/// rather than being computed here, and that is load-bearing rather than tidiness: the commission
+/// this function DEDUCTS from the guard is the same money stream ② later SWEEPS into the company
+/// revenue account (`payments.commission_amount`). Two copies of `gross × pct / 100` that rounded
+/// differently would leave the platform sweeping a number the guard was never charged, with nothing
+/// in the system able to notice.
 pub fn compute_payout(
     base_fee: Decimal,
     hours: Decimal,
@@ -84,11 +134,8 @@ pub fn compute_payout(
     wht_rate_percent: Decimal,
 ) -> PayoutAmounts {
     let hundred = Decimal::from(100);
-    let pct = commission_percent
-        .unwrap_or(Decimal::ZERO)
-        .clamp(Decimal::ZERO, hundred);
-    let gross = (base_fee * hours).round_dp(2);
-    let commission = (gross * pct / hundred).round_dp(2);
+    let gross = settlement::guard_gross(base_fee, hours);
+    let commission = settlement::commission_on(gross, commission_percent);
     let income = gross - commission;
     let wht = (income * wht_rate_percent / hundred).round_dp(2);
     let transfer = income - wht;
@@ -226,6 +273,46 @@ mod tests {
             };
             assert!(sel.validate().is_ok());
         }
+    }
+
+    // ----- per-item void (the "one guard's credit line bounced" correction) -----
+
+    #[test]
+    fn a_per_item_void_must_name_at_least_one_booking() {
+        // An empty list must NOT fall through to "void everything": that is the whole-batch action,
+        // and it un-pays every guard in the file.
+        assert!(matches!(
+            normalize_voided_booking_ids(&[]),
+            Err(AppError::BadRequest(_))
+        ));
+    }
+
+    #[test]
+    fn duplicate_booking_ids_collapse_and_the_order_is_kept() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let out = normalize_voided_booking_ids(&[a, b, a, a]).expect("clumsy but legitimate");
+        assert_eq!(out, vec![a, b], "de-duplicated, first-seen order kept");
+        // …which is what lets the repo compare rows_affected against the list length: `[a, a]`
+        // updates ONE row, so without this the request would look like a missing booking.
+        assert_eq!(normalize_voided_booking_ids(&[a]).unwrap(), vec![a]);
+    }
+
+    #[test]
+    fn an_absurdly_long_void_list_is_rejected_at_the_limit() {
+        let many = vec![Uuid::new_v4(); MAX_VOIDED_ITEMS + 1];
+        // NOTE the cap is measured on what was SENT, before de-duplication: 501 copies of one id is
+        // a client bug either way, and counting after would let an unbounded body through.
+        assert!(matches!(
+            normalize_voided_booking_ids(&many),
+            Err(AppError::BadRequest(_))
+        ));
+        let distinct: Vec<Uuid> = (0..MAX_VOIDED_ITEMS).map(|_| Uuid::new_v4()).collect();
+        assert_eq!(
+            normalize_voided_booking_ids(&distinct)
+                .expect("the limit itself is allowed")
+                .len(),
+            MAX_VOIDED_ITEMS
+        );
     }
 
     #[test]
