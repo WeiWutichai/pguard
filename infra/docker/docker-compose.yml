@@ -93,7 +93,7 @@ services:
   # ── MinIO — S3-compatible object store (docs, check-in photos; R2 in prod) ──
   # 9000 = S3 API, 9001 = web console.
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:RELEASE.2024-10-13T13-34-11Z
     container_name: pguard-minio
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
