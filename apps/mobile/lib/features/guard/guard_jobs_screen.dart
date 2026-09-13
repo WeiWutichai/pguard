@@ -16,20 +16,48 @@ import 'widgets/job_card.dart';
 
 /// The guard's "งานของฉัน / My Jobs" screen (design `Mobile - Guard App.html` ②): a 3-tab
 /// segmented control over the guard's bookings — รอตอบรับ / กำลังทำ / เสร็จ (Pending / Active /
-/// Done) — fed by the one-shot `GET /v1/bookings` list (no polling; pull-to-refresh re-fetches).
+/// Done) — fed by the one-shot `GET /v1/bookings` + `GET /v1/bookings/open` feeds
+/// ([GuardJobsController]; no polling, pull-to-refresh re-fetches).
 ///
-/// NOTE (v2): that feed returns only ALREADY-ASSIGNED jobs (there is no open-job discovery yet),
-/// so the Pending tab is structurally empty until a discovery endpoint exists — the screen opens
-/// on Active, the guard's first useful view.
+/// The screen opens on ACTIVE by default — the job the guard is working is their most urgent view,
+/// and every in-app entry point that means "my current work" (the dashboard's "งานที่กำลังทำ ›
+/// ดูทั้งหมด", the awaiting-customer CTA) lands here. Callers that mean something ELSE must say so
+/// with [initialTab] / the `?tab=` query the route parses — notably the bottom-nav "งาน" badge,
+/// which counts รอตอบรับ jobs and so must open THAT tab.
+///
+/// (The obsolete note this replaced claimed "there is no open-job discovery yet, so the Pending tab
+/// is structurally empty". Untrue since `/bookings/open` shipped: รอตอบรับ is the live job pool —
+/// see [GuardJobsController.incoming]. Do not restore a hard-coded Active default on that reasoning.)
 class GuardJobsScreen extends ConsumerStatefulWidget {
-  const GuardJobsScreen({super.key});
+  const GuardJobsScreen({super.key, this.initialTab = activeTab});
+
+  /// Tab indices, named so call sites and the `?tab=` parser can't drift out of sync with the
+  /// `groups`/`labels` ordering below.
+  static const int pendingTab = 0;
+  static const int activeTab = 1;
+  static const int doneTab = 2;
+
+  /// Which tab to open on. Defaults to [activeTab]; the guard can still switch by tapping.
+  final int initialTab;
+
+  /// Parse the route's `?tab=` value (`pending` / `active` / `done`). Anything else — absent,
+  /// misspelt, a stale deep link — falls back to [activeTab] rather than throwing, so a bad link
+  /// still opens a usable screen.
+  static int tabFromQuery(String? value) => switch (value) {
+        'pending' => pendingTab,
+        'done' => doneTab,
+        _ => activeTab,
+      };
 
   @override
   ConsumerState<GuardJobsScreen> createState() => _GuardJobsScreenState();
 }
 
 class _GuardJobsScreenState extends ConsumerState<GuardJobsScreen> {
-  int _tab = 1; // Active (see class note: Pending is empty in v2).
+  // Clamped: the tab index also indexes `groups`, so an out-of-range value from a deep link would
+  // be a RangeError on first build rather than a wrong-looking tab.
+  late int _tab = widget.initialTab
+      .clamp(GuardJobsScreen.pendingTab, GuardJobsScreen.doneTab);
 
   @override
   Widget build(BuildContext context) {

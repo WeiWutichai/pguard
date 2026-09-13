@@ -204,7 +204,7 @@ class GuardEarnings {
   /// Σ estimated pay for completed jobs whose scheduled LOCAL date falls in a calendar-day range:
   /// the `days` days ending `offsetDays` days before today (offset 0 = the current window; offset =
   /// days = the immediately-prior window, for growth). CALENDAR-day bucketing — the SAME rule as
-  /// [dailySeries] — so a job scheduled for LATER TODAY that is already completed is still counted.
+  /// [seriesFor] — so a job scheduled for LATER TODAY that is already completed is still counted.
   /// (The old rolling `(now − len, now]` window used a `!isAfter(now)` future-TIME guard that wrongly
   /// dropped a job booked for, say, 14:00 today when the clock read 11:58 → "฿0 today" despite
   /// completed jobs sitting in the list below.) ACCURACY caveat re the 100-row feed cap is unchanged
@@ -285,42 +285,118 @@ class GuardEarnings {
     return (current - prior) / prior;
   }
 
-  /// The LOCAL calendar dates for the [dailySeries] bars, OLDEST first (last == today). Built with
-  /// `DateTime(y, m, d - i)` so it stays correct across month boundaries (and DST, for non-TH
-  /// locales). [dailySeries] buckets against this exact list, so a bar's value and its weekday
-  /// label can never disagree.
-  static List<DateTime> seriesDates(DateTime now, {int days = 7}) {
-    final local = now.toLocal();
-    return [
-      for (var i = days - 1; i >= 0; i--)
-        DateTime(local.year, local.month, local.day - i),
-    ];
-  }
+  /// Calendar days per BAR of the chart for a window.
+  ///
+  /// MUST divide [windowDays] exactly — the bars are a DECOMPOSITION of the hero, so together they
+  /// have to cover the hero's window and nothing else. (The reported bug was precisely this: the
+  /// chart was hard-wired to 7 days while the hero followed the tab, so on เดือน a ฿2,001 hero sat
+  /// above bars totalling ฿1, and on วัน a ฿0 hero sat above bars showing money.)
+  ///
+  /// Day and Week bucket per calendar day (1 and 7 bars). Month buckets SIX days (5 bars) because
+  /// 30 daily bars across a 375px phone minus padding is ~11px each — shape with no legibility, and
+  /// "what did I earn on the 13th" is not the question a monthly view is asked. Five 6-day blocks
+  /// still sum to the 30-day hero and answer the real one: which stretch was good.
+  static int chartBucketDays(EarningsWindow w) => switch (w) {
+        EarningsWindow.day => 1,
+        EarningsWindow.week => 1,
+        EarningsWindow.month => 6,
+      };
 
-  /// Estimated NET pay (satang) per day for the last [days] days ending today, OLDEST first.
-  /// Bucketed by the job's scheduled LOCAL date against [seriesDates] — drives the 7-day bar chart.
-  /// Net, like every other figure on the screen, so the bars add up to the hero.
-  static List<int> dailySeries(List<Booking> all, DateTime now,
-      {int days = 7,
-      Map<String, double>? actualHours,
-      Map<String, int>? commissionPercent}) {
-    final dates = seriesDates(now, days: days);
-    final buckets = List<int>.filled(days, 0);
+  /// The bar chart for [w] — buckets OLDEST first, together covering EXACTLY the calendar days
+  /// [payInWindow] sums, so `series.totalSatang == payInWindow(...).netSatang` always holds (locked
+  /// by test). Same calendar-day rule as [_sumCalendarDays] and [jobsInWindow], so the chart, the
+  /// hero and the rows below it are three views of one set of jobs.
+  ///
+  /// Each bucket carries its own start/end date, so a bar's label is read off the bar's own
+  /// boundaries and can never drift from its value.
+  static EarningsSeries seriesFor(
+      List<Booking> all, DateTime now, EarningsWindow w,
+      {Map<String, double>? actualHours, Map<String, int>? commissionPercent}) {
+    final per = chartBucketDays(w);
+    final count = windowDays(w) ~/ per;
+    final local = now.toLocal();
+    // Built with `DateTime(y, m, d - n)` so month boundaries (and DST, for non-TH locales) stay the
+    // calendar's problem rather than ours. Bucket `count - 1` ends TODAY; each earlier one ends
+    // `per` days before the next begins, so the oldest starts today − (windowDays − 1).
+    DateTime dayBefore(int n) =>
+        DateTime(local.year, local.month, local.day - n);
+    final bounds = [
+      for (var i = count - 1; i >= 0; i--)
+        (start: dayBefore(i * per + per - 1), end: dayBefore(i * per)),
+    ];
+
+    final sums = List<int>.filled(count, 0);
     for (final b in completedJobs(all)) {
       final when = b.scheduledAt?.toLocal();
       if (when == null) continue;
-      for (var i = 0; i < dates.length; i++) {
-        if (when.year == dates[i].year &&
-            when.month == dates[i].month &&
-            when.day == dates[i].day) {
-          buckets[i] += jobEarningsSatang(b,
+      final d = DateTime(when.year, when.month, when.day);
+      for (var i = 0; i < bounds.length; i++) {
+        if (!d.isBefore(bounds[i].start) && !d.isAfter(bounds[i].end)) {
+          sums[i] += jobEarningsSatang(b,
               actualHours: actualHours, commissionPercent: commissionPercent);
           break;
         }
       }
     }
-    return buckets;
+
+    return EarningsSeries(
+      bucketDays: per,
+      buckets: [
+        for (var i = 0; i < count; i++)
+          EarningsBucket(
+              start: bounds[i].start, end: bounds[i].end, netSatang: sums[i]),
+      ],
+    );
   }
+}
+
+/// One bar: the guard's NET pay over a block of consecutive calendar days, with the block's own
+/// inclusive boundaries attached so the bar's label comes from the bar's own data.
+class EarningsBucket {
+  const EarningsBucket({
+    required this.start,
+    required this.end,
+    required this.netSatang,
+  });
+
+  /// First LOCAL calendar date in the bucket (inclusive).
+  final DateTime start;
+
+  /// Last LOCAL calendar date in the bucket (inclusive; == [start] for a one-day bucket).
+  final DateTime end;
+
+  /// Σ NET pay for the completed jobs scheduled in `[start, end]`.
+  final int netSatang;
+
+  /// A one-day bucket labels itself by weekday; a multi-day one by its date range.
+  bool get isSingleDay => start == end;
+}
+
+/// The chart's data for ONE window — a decomposition of [GuardEarnings.payInWindow], never an
+/// independently-scoped series (that mismatch WAS the bug).
+class EarningsSeries {
+  const EarningsSeries({required this.buckets, required this.bucketDays});
+
+  /// Oldest first; the LAST bucket always contains today.
+  final List<EarningsBucket> buckets;
+
+  /// Calendar days per bucket (1 = a daily bar).
+  final int bucketDays;
+
+  /// Σ over the bars — equals the hero's net for the same window, by construction.
+  int get totalSatang => buckets.fold<int>(0, (a, b) => a + b.netSatang);
+
+  /// The busiest bucket's net, which is what the bar heights normalise against. The screen PRINTS
+  /// it: without a scale a lone ฿1 job draws an identical full-height bar to a ฿10,000 one, which
+  /// is most of why the chart read as wrong.
+  int get maxSatang =>
+      buckets.fold<int>(0, (a, b) => b.netSatang > a ? b.netSatang : a);
+
+  /// Nothing was earned anywhere in the window (every bar is a true zero).
+  bool get isEmpty => maxSatang == 0;
+
+  /// A single bar is not a chart — on the Day tab the decomposition is the per-job rows instead.
+  bool get isChartable => buckets.length > 1;
 }
 
 /// Rolling earnings windows for the Day/Week/Month tab bar.

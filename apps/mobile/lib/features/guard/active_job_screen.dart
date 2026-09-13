@@ -952,13 +952,16 @@ class _TransitionBar extends ConsumerWidget {
     );
   }
 
-  /// Return the guard to their "งานของฉัน / My Jobs" list after a job leaves their hands
-  /// (awaiting the customer, or completed). Two problems this fixes (#121):
+  /// Return the guard to their "งานของฉัน / My Jobs" list — the destination for the AWAITING stage
+  /// ONLY. The job is still theirs there: `pending_completion` is not terminal, so it sits in the
+  /// list's "กำลังทำ / Active" tab (see [GuardJobsController.active]) with its
+  /// "รอลูกค้ายืนยันจบงาน" badge. A job that has actually ENDED must use [_backToPool] instead.
+  /// Two problems this fixes (#121):
   ///
   ///   1. STALE LIST — the jobs list ([guardJobsControllerProvider]) is a cached fetch that is NOT
-  ///      refetched on completion, so the just-completed job lingers in "กำลังทำ / Active" instead
-  ///      of moving to "เสร็จ / Done". Invalidate it FIRST so the list this navigation lands on is
-  ///      rebuilt from a fresh `GET /bookings` (the completed job now partitions into the Done tab).
+  ///      refetched when a status changes, so the job we just left still renders at its OLD status
+  ///      (here: no "รอลูกค้ายืนยันจบงาน" badge, so it looks like work still to do). Invalidate it
+  ///      FIRST so the list this navigation lands on is rebuilt from a fresh `GET /bookings`.
   ///
   ///   2. FROZEN BACK — a bare `context.go('/guard/jobs')` REPLACES the whole navigation stack with
   ///      a single page rooted at the jobs list (My Jobs is normally a PUSHED child of the guard
@@ -968,10 +971,32 @@ class _TransitionBar extends ConsumerWidget {
   ///
   /// Single-tap / idempotent: `context.go` is a stack reset, so a double-tap just re-lands on the
   /// same two-page stack — it can never deepen it or strand the guard.
-  void _backToJobs(BuildContext context, WidgetRef ref) {
+  void _backToMyJobs(BuildContext context, WidgetRef ref) {
     ref.invalidate(guardJobsControllerProvider);
     context.go('/home/guard');
     context.push('/guard/jobs');
+  }
+
+  /// Return the guard to the JOB POOL once this job has ENDED — the guard dashboard `/home/guard`,
+  /// which IS the "พร้อมรับงาน / ready for work" screen: the online toggle plus the "งานรอตอบรับ"
+  /// section whose cards carry the รับงาน / ไม่รับงาน buttons.
+  ///
+  /// Why this is NOT [_backToMyJobs] (the reported bug): "กลับไปรับงานใหม่ / Take new jobs" promises
+  /// the pool of NEW jobs, but My Jobs opens on its "กำลังทำ / Active" tab and a finished job is
+  /// terminal — [GuardJobsController.active] drops it. The guard therefore landed on an empty
+  /// "ยังไม่มีงานที่กำลังทำ", i.e. literally the งานที่กำลังทำ screen the tester reported, while the
+  /// jobs they could actually take sat unseen on the un-selected "รอตอบรับ" tab. The CTA had simply
+  /// been wired to the AWAITING stage's helper, whose label ("กลับไปหน้างานของฉัน") promises
+  /// something else.
+  ///
+  /// A bare `go` with NO following `push` is correct here and does not re-open #121's frozen back:
+  /// the guard home is a ROOT screen that renders no back button of its own ([PGuardHeader] defaults
+  /// `showBack: false`), so there is nothing to pop and nothing to look frozen. It also RESETS the
+  /// stack, which is the point — the dead job is dropped, so no back gesture can walk back into a
+  /// job that no longer exists. Identical to [_CancelledBar._backToPool] and the withdraw flow.
+  void _backToPool(BuildContext context, WidgetRef ref) {
+    ref.invalidate(guardJobsControllerProvider);
+    context.go('/home/guard');
   }
 
   Future<void> _complete(
@@ -1154,7 +1179,7 @@ class _TransitionBar extends ConsumerWidget {
             // so they can pick up the next job while this one awaits the customer's approval.
             PgPrimaryButton(
               label: isThai ? 'กลับไปหน้างานของฉัน' : 'Back to my jobs',
-              onPressed: () => _backToJobs(context, ref),
+              onPressed: () => _backToMyJobs(context, ref),
             ),
             const SizedBox(height: PgTokens.space1),
             // Design G5: chatting the customer is the secondary action. (The old "ดูสถานะสด" link is
@@ -1204,7 +1229,9 @@ class _TransitionBar extends ConsumerWidget {
             const SizedBox(height: PgTokens.space3),
             PgPrimaryButton(
               label: isThai ? 'กลับไปรับงานใหม่' : 'Take new jobs',
-              onPressed: () => _backToJobs(context, ref),
+              // The POOL (`/home/guard`), never the My Jobs list — see [_backToPool]. This job is
+              // finished; My Jobs would have opened on "กำลังทำ", which by definition excludes it.
+              onPressed: () => _backToPool(context, ref),
             ),
             const SizedBox(height: PgTokens.space1),
             // The guard's OWN pay for this job — not the customer's receipt. The receipt is the
@@ -1236,9 +1263,12 @@ class _CancelledBar extends ConsumerWidget {
   final String bookingId;
   final ActiveJobState state;
 
-  /// Return the guard to the job pool. Invalidate the jobs list FIRST so the screen we land on
-  /// rebuilds from a fresh `GET /bookings` (the cancelled job is no longer in [active]).
-  void _backToJobs(BuildContext context, WidgetRef ref) {
+  /// Return the guard to the job pool — the SAME destination as [_TransitionBar._backToPool], which
+  /// carries the identical "กลับไปรับงานใหม่" label. Both terminal CTAs must land on `/home/guard`
+  /// (the พร้อมรับงาน dashboard with the incoming-job list); the My Jobs list is for the non-terminal
+  /// awaiting stage only. Invalidate the jobs list FIRST so the screen we land on rebuilds from a
+  /// fresh `GET /bookings` (the cancelled job is no longer in [active]).
+  void _backToPool(BuildContext context, WidgetRef ref) {
     ref.invalidate(guardJobsControllerProvider);
     context.go('/home/guard');
   }
@@ -1310,7 +1340,7 @@ class _CancelledBar extends ConsumerWidget {
         // The PROMINENT primary: get the guard back to the job pool.
         PgPrimaryButton(
           label: isThai ? 'กลับไปรับงานใหม่' : 'Back to jobs',
-          onPressed: () => _backToJobs(context, ref),
+          onPressed: () => _backToPool(context, ref),
         ),
         const SizedBox(height: PgTokens.space1),
         // Chat + details stay available as SECONDARY actions for any follow-up the guard needs.

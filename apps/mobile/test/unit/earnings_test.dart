@@ -209,7 +209,7 @@ void main() {
       expect(GuardEarnings.sumInWindow(jobs, now, EarningsWindow.week), 269100);
       // …and the bars add up to it.
       expect(
-        GuardEarnings.dailySeries(jobs, now).fold<int>(0, (a, b) => a + b),
+        GuardEarnings.seriesFor(jobs, now, EarningsWindow.week).totalSatang,
         269100,
       );
       // Growth compares take-home with take-home (no prior window here → no baseline).
@@ -360,38 +360,36 @@ void main() {
       expect(GuardEarnings.growth(series, now, EarningsWindow.week), 1.0);
     });
 
-    test('dailySeries buckets by local date, oldest-first, today last', () {
-      final s = GuardEarnings.dailySeries(jobs, now);
-      expect(s.length, 7);
-      expect(s.last, 184000); // today
-      expect(s[7 - 1 - 3], 184000); // 3 days ago
+    test('seriesFor(week) buckets by local date, oldest-first, today last', () {
+      final s = GuardEarnings.seriesFor(jobs, now, EarningsWindow.week);
+      expect(s.buckets.length, 7);
+      expect(s.bucketDays, 1);
+      expect(s.buckets.last.netSatang, 184000); // today
+      expect(s.buckets[7 - 1 - 3].netSatang, 184000); // 3 days ago
       // Days with no completed job stay 0.
-      expect(s[0], 0);
-      expect(s.fold<int>(0, (a, b) => a + b), 184000 * 2);
+      expect(s.buckets.first.netSatang, 0);
+      expect(s.totalSatang, 184000 * 2);
+      expect(s.maxSatang, 184000);
     });
 
-    test('dailySeries on empty input is all zeros', () {
-      expect(GuardEarnings.dailySeries(const [], now), List<int>.filled(7, 0));
+    test('seriesFor on empty input is all-zero buckets, not an empty chart',
+        () {
+      for (final w in EarningsWindow.values) {
+        final s = GuardEarnings.seriesFor(const [], now, w);
+        expect(s.buckets.length, GuardEarnings.windowDays(w) ~/ s.bucketDays);
+        expect(s.buckets.every((b) => b.netSatang == 0), isTrue);
+        expect(s.totalSatang, 0);
+        expect(s.maxSatang, 0);
+        expect(s.isEmpty, isTrue, reason: 'every bar is a true zero');
+      }
     });
 
-    test('dailySeries excludes a future-dated job', () {
+    test('seriesFor excludes a future-dated job', () {
       final withFuture = [
         booking(scheduledAt: now.add(const Duration(days: 1))),
       ];
-      expect(
-          GuardEarnings.dailySeries(withFuture, now), List<int>.filled(7, 0));
-    });
-
-    test('seriesDates is oldest-first, today last, length days', () {
-      final d = GuardEarnings.seriesDates(now, days: 7);
-      expect(d.length, 7);
-      final today = now.toLocal();
-      expect(d.last.year, today.year);
-      expect(d.last.month, today.month);
-      expect(d.last.day, today.day);
-      // Strictly ascending, one calendar day apart.
-      for (var i = 1; i < d.length; i++) {
-        expect(d[i].difference(d[i - 1]).inDays, 1);
+      for (final w in EarningsWindow.values) {
+        expect(GuardEarnings.seriesFor(withFuture, now, w).totalSatang, 0);
       }
     });
 
@@ -401,6 +399,171 @@ void main() {
       expect(GuardEarnings.feedMayBeTruncated(n(99)), isFalse);
       expect(GuardEarnings.feedMayBeTruncated(n(GuardEarnings.feedRowCap)),
           isTrue);
+    });
+  });
+
+  // The reported bug: the chart was hard-wired to 7 days while the hero followed the Day/Week/Month
+  // tab, so on เดือน the bars contradicted the number directly above them (and on วัน they showed
+  // money the hero deliberately excluded). Everything here exists to make that unrepeatable.
+  group('GuardEarnings.seriesFor — the bars decompose the hero', () {
+    final now = DateTime.utc(2026, 6, 17, 12);
+
+    // A completed job on EVERY one of the last 45 days, each at a DIFFERENT rate (฿1, ฿2, …), so an
+    // off-by-one in any bucket boundary moves a total instead of hiding behind identical amounts.
+    // Noon UTC keeps each local calendar date stable across test-machine timezones.
+    final spread = [
+      for (var d = 0; d < 45; d++)
+        booking(
+          id: 'd$d',
+          baseFee: '${d + 1}.00',
+          hours: 1,
+          scheduledAt: now.subtract(Duration(days: d)),
+        ),
+    ];
+
+    test('THE INVARIANT: the bars sum to the hero, on every tab', () {
+      for (final w in EarningsWindow.values) {
+        expect(
+          GuardEarnings.seriesFor(spread, now, w).totalSatang,
+          GuardEarnings.payInWindow(spread, now, w).netSatang,
+          reason: 'chart ≠ hero on $w — that disagreement IS the bug',
+        );
+      }
+    });
+
+    test(
+        'the invariant survives the settle overrides (actual hours + commission)',
+        () {
+      // Reconciled to half the booked hour at 12.5% commission — the bars must follow the hero
+      // through BOTH overrides, since they are what makes the hero's number move.
+      final actual = {for (var d = 0; d < 45; d++) 'd$d': 0.5};
+      final pct = {for (var d = 0; d < 45; d++) 'd$d': 1250};
+      for (final w in EarningsWindow.values) {
+        expect(
+          GuardEarnings.seriesFor(spread, now, w,
+                  actualHours: actual, commissionPercent: pct)
+              .totalSatang,
+          GuardEarnings.payInWindow(spread, now, w,
+                  actualHours: actual, commissionPercent: pct)
+              .netSatang,
+          reason: 'chart ≠ hero on $w after reconcile',
+        );
+      }
+    });
+
+    test('วัน = 1 bucket · สัปดาห์ = 7 daily bars · เดือน = 5 six-day blocks',
+        () {
+      final day = GuardEarnings.seriesFor(spread, now, EarningsWindow.day);
+      final week = GuardEarnings.seriesFor(spread, now, EarningsWindow.week);
+      final month = GuardEarnings.seriesFor(spread, now, EarningsWindow.month);
+
+      expect(day.buckets.length, 1);
+      expect(week.buckets.length, 7);
+      expect(week.bucketDays, 1);
+      expect(month.buckets.length, 5);
+      expect(month.bucketDays, 6);
+      // 30 daily bars on a phone is ~11px each; a single bar is not a chart at all. The Day tab's
+      // breakdown is the per-job rows below it instead, so the screen draws no bars there.
+      expect(day.isChartable, isFalse);
+      expect(week.isChartable, isTrue);
+      expect(month.isChartable, isTrue);
+    });
+
+    test('every window is covered exactly — buckets × bucketDays == windowDays',
+        () {
+      for (final w in EarningsWindow.values) {
+        final s = GuardEarnings.seriesFor(spread, now, w);
+        expect(s.buckets.length * s.bucketDays, GuardEarnings.windowDays(w));
+        for (final b in s.buckets) {
+          expect(b.end.difference(b.start).inDays + 1, s.bucketDays,
+              reason: 'a bar must span exactly bucketDays calendar days');
+          expect(b.isSingleDay, s.bucketDays == 1);
+        }
+      }
+    });
+
+    test('buckets are contiguous, oldest-first, and the last one holds today',
+        () {
+      final local = now.toLocal();
+      final today = DateTime(local.year, local.month, local.day);
+      for (final w in EarningsWindow.values) {
+        final s = GuardEarnings.seriesFor(spread, now, w);
+        expect(s.buckets.last.end, today);
+        expect(
+          s.buckets.first.start,
+          DateTime(today.year, today.month,
+              today.day - (GuardEarnings.windowDays(w) - 1)),
+          reason: 'the oldest bar must start where payInWindow starts',
+        );
+        for (var i = 1; i < s.buckets.length; i++) {
+          final prev = s.buckets[i - 1].end;
+          expect(
+              s.buckets[i].start, DateTime(prev.year, prev.month, prev.day + 1),
+              reason: 'no gap and no overlap between bar ${i - 1} and bar $i');
+        }
+      }
+    });
+
+    test(
+        'a job on the window\'s oldest day is IN (and in the OLDEST bar); one day earlier is OUT',
+        () {
+      for (final w in EarningsWindow.values) {
+        final days = GuardEarnings.windowDays(w);
+        final onEdge = [
+          booking(
+              id: 'edge', scheduledAt: now.subtract(Duration(days: days - 1)))
+        ];
+        final justOutside = [
+          booking(id: 'out', scheduledAt: now.subtract(Duration(days: days)))
+        ];
+        final s = GuardEarnings.seriesFor(onEdge, now, w);
+        expect(s.totalSatang, 184000, reason: '$w: the boundary day counts');
+        expect(s.buckets.first.netSatang, 184000,
+            reason: '$w: and it belongs to the oldest bar');
+        expect(GuardEarnings.seriesFor(justOutside, now, w).totalSatang, 0,
+            reason: '$w: one day before the window earns nothing here');
+      }
+    });
+
+    test('each เดือน bar holds exactly its own six days', () {
+      // One ฿1,840 job on each of the 30 days in the window → every block must read 6 × ฿1,840.
+      final everyDay = [
+        for (var d = 0; d < 30; d++)
+          booking(id: 'x$d', scheduledAt: now.subtract(Duration(days: d))),
+      ];
+      final s = GuardEarnings.seriesFor(everyDay, now, EarningsWindow.month);
+      expect(s.buckets.map((b) => b.netSatang).toList(),
+          List<int>.filled(5, 184000 * 6));
+      expect(s.maxSatang, 184000 * 6);
+      expect(
+          s.totalSatang,
+          GuardEarnings.payInWindow(everyDay, now, EarningsWindow.month)
+              .netSatang);
+    });
+
+    test('undated and not-yet-completed jobs never occupy a bar', () {
+      final noise = [
+        booking(id: 'nodate', scheduledAt: null),
+        booking(id: 'open', status: BookingStatus.accepted, scheduledAt: now),
+      ];
+      for (final w in EarningsWindow.values) {
+        final s = GuardEarnings.seriesFor(noise, now, w);
+        expect(s.totalSatang, 0);
+        expect(s.isEmpty, isTrue);
+      }
+    });
+
+    test('maxSatang is the busiest BAR (the scale the heights normalise to)',
+        () {
+      // Two ฿1,840 jobs on one day, one on another → the tall bar is ฿3,680, not ฿1,840.
+      final jobs = [
+        booking(id: 'a', scheduledAt: now.subtract(const Duration(days: 1))),
+        booking(id: 'b', scheduledAt: now.subtract(const Duration(days: 1))),
+        booking(id: 'c', scheduledAt: now.subtract(const Duration(days: 2))),
+      ];
+      final s = GuardEarnings.seriesFor(jobs, now, EarningsWindow.week);
+      expect(s.maxSatang, 368000);
+      expect(s.isEmpty, isFalse);
     });
   });
 }

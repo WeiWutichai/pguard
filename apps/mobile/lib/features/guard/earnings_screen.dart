@@ -21,9 +21,16 @@ import '../../widgets/pguard_header.dart';
 
 /// Guard "รายได้" tab — estimated earnings derived from the guard's COMPLETED bookings
 /// (`GET /v1/bookings`, guard = assigned jobs). UI per Guard_App.md Screen 6 "Earnings":
-/// a Day/Week/Month segmented control, a windowed mono hero with a growth line, a 7-day
-/// bar chart, and "รายการล่าสุด" per-job rows. Shares [guardJobsControllerProvider] with the
-/// guard dashboard (same endpoint — one cache); pull-to-refresh re-pulls, no polling.
+/// a Day/Week/Month segmented control, a windowed mono hero with a growth line, a bar chart, and
+/// "รายการล่าสุด" per-job rows. Shares [guardJobsControllerProvider] with the guard dashboard
+/// (same endpoint — one cache); pull-to-refresh re-pulls, no polling.
+///
+/// ONE WINDOW, THREE VIEWS: the hero, the bars and the rows are all scoped to the SELECTED tab, so
+/// the bars add up to the number above them and the rows add up to it too. The design only ever
+/// drew the Week state, and the chart shipped hard-wired to 7 days while the hero followed the tab
+/// — on เดือน that put a 30-day hero above a 7-day chart (reported as "กราฟข้อมูลยังไม่ตรง"), and on
+/// วัน it put a ฿0 hero above bars showing money. [GuardEarnings.seriesFor] now buckets per window
+/// and the sum-equals-hero property is locked by unit test.
 ///
 /// COMMISSION: the platform's per-service cut comes out of the GUARD's pay, so every figure on
 /// this screen is NET of it — and the gross and the deduction are shown NEXT TO the net, on the
@@ -105,11 +112,13 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
             );
           }
           final now = widget.now ?? DateTime.now();
-          // Two different sets, deliberately: the empty state and the 7-day chart are about
-          // whether this guard has ANY finished work, while the rows below are the hero's own
-          // terms — see [GuardEarnings.jobsInWindow].
+          // The empty state is about whether this guard has ANY finished work at all; the chart
+          // and the rows are both the SELECTED window's own terms — see
+          // [GuardEarnings.seriesFor] / [GuardEarnings.jobsInWindow].
           final completed = GuardEarnings.completedJobs(all);
           final inWindow = GuardEarnings.jobsInWindow(all, now, _window);
+          final series = GuardEarnings.seriesFor(all, now, _window,
+              actualHours: actualHours, commissionPercent: commissionPercent);
           return RefreshIndicator(
             onRefresh: () =>
                 ref.read(guardJobsControllerProvider.notifier).refresh(),
@@ -138,13 +147,11 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                 if (completed.isEmpty)
                   _EmptyEarnings(isThai: isThai)
                 else ...[
-                  _EarningsChart(
-                    series: GuardEarnings.dailySeries(all, now,
-                        actualHours: actualHours,
-                        commissionPercent: commissionPercent),
-                    dates: GuardEarnings.seriesDates(now),
-                    isThai: isThai,
-                  ),
+                  // One bar is not a chart: on วัน the window IS a single day, and its breakdown is
+                  // the per-job rows right below. Drawing a lone always-full-height bar there would
+                  // say nothing while looking like data.
+                  if (series.isChartable)
+                    _EarningsChart(series: series, isThai: isThai),
                   // The list is scoped to the selected window, so the rows sum to the hero.
                   Padding(
                     // Design separates 'รายการล่าสุด' from the chart by ~28px above.
@@ -362,89 +369,177 @@ class _HeroBreakdownLine extends StatelessWidget {
   }
 }
 
-/// Design `ebars`: a 7-day daily bar chart (last 7 days ending today, oldest→newest). Bars are
-/// brand-green; today's bar is amber. Heights normalise to the busiest day; an empty day still
-/// shows the `min-height` stub. Weekday labels (จ อ พ … / Mo Tu …) come from each bar's real date.
+/// Design `ebars`, generalised: the bars are the DECOMPOSITION of the hero above them, so they
+/// always cover the selected window and nothing else ([GuardEarnings.seriesFor]).
+///
+/// สัปดาห์ = 7 daily bars with weekday labels (จ อ พ … / Mo Tu …), which is what the design drew.
+/// เดือน = 5 six-day blocks labelled with the date each block STARTS on — 30 daily bars across a
+/// phone is ~11px each, unreadable, and the design never drew a month state at all. วัน has a
+/// single bucket, so the screen drops the chart entirely rather than draw one meaningless bar.
+///
+/// Three rendering rules the old 7-day chart got wrong, each of which on its own made a correct
+/// series look like broken data:
+///  · the busiest bucket's ฿ is PRINTED. Heights normalise to it, and with no scale a lone ฿1 job
+///    drew exactly the same dramatic full-height bar as a ฿10,000 one.
+///  · a TRUE zero draws no fill, only the faint track. The old 0.07 min-height stub made ฿0 and a
+///    real ฿1 day pixel-identical.
+///  · the amber "current" bar is the block containing today, and only when it EARNED something —
+///    an empty today used to render as an unexplained orange stub next to green ones.
 class _EarningsChart extends StatelessWidget {
-  const _EarningsChart({
-    required this.series,
-    required this.dates,
-    required this.isThai,
-  });
+  const _EarningsChart({required this.series, required this.isThai});
 
-  /// Satang per day, oldest-first, length == number of bars; last entry is today.
-  final List<int> series;
-
-  /// The LOCAL calendar date for each bar (from `GuardEarnings.seriesDates`, same order as
-  /// [series]) — the bar's weekday label is read from here so it can never drift from its value.
-  final List<DateTime> dates;
+  final EarningsSeries series;
   final bool isThai;
 
   static const _thWeekday = ['', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส', 'อา'];
   static const _enWeekday = ['', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
 
+  /// A daily bar names its weekday; a multi-day block names the date it starts on (the caption
+  /// above says how many days a block covers, so the date reads as a block, not a point).
+  String _label(EarningsBucket b) => b.isSingleDay
+      ? (isThai ? _thWeekday : _enWeekday)[b.start.weekday]
+      : thaiShortDate(b.start, isThai: isThai);
+
+  /// What a screen reader gets, which the visual bar cannot carry: the bucket's full date range
+  /// and its actual amount.
+  String _semantics(EarningsBucket b) {
+    final when = b.isSingleDay
+        ? thaiShortDate(b.start, isThai: isThai)
+        : '${thaiShortDate(b.start, isThai: isThai)} – ${thaiShortDate(b.end, isThai: isThai)}';
+    return '$when ${Money.format(b.netSatang)}';
+  }
+
   @override
   Widget build(BuildContext context) {
-    final maxVal = series.fold<int>(0, math.max);
-    final weekday = isThai ? _thWeekday : _enWeekday;
+    final maxVal = series.maxSatang;
+    final lastIndex = series.buckets.length - 1;
+    // Built up-front rather than inline in the Row: an `Expanded` has to be a DIRECT child of the
+    // Flex, so it cannot be wrapped in a per-bar Builder.
+    final bars = <Widget>[];
+    for (var i = 0; i < series.buckets.length; i++) {
+      final b = series.buckets[i];
+      if (i > 0) bars.add(const SizedBox(width: PgTokens.space2));
+      bars.add(Expanded(
+        child: _Bar(
+          // A true ฿0 is 0.0 (track only); anything non-zero keeps a visible floor so a
+          // small-but-real amount never disappears next to a big one.
+          fraction:
+              b.netSatang == 0 ? 0.0 : math.max(b.netSatang / maxVal, 0.06),
+          highlight: i == lastIndex && b.netSatang > 0,
+          label: _label(b),
+          semanticsLabel: _semantics(b),
+        ),
+      ));
+    }
     return Padding(
       padding:
           const EdgeInsets.fromLTRB(PgTokens.space5, 14, PgTokens.space5, 0),
-      child: SizedBox(
-        height: 110,
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            for (var i = 0; i < series.length; i++) ...[
-              if (i > 0) const SizedBox(width: PgTokens.space2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
               Expanded(
-                child: _Bar(
-                  // min-height stub (≈6px of the ~84px bar area) for empty days.
-                  fraction:
-                      maxVal == 0 ? 0.07 : math.max(series[i] / maxVal, 0.07),
-                  isToday: i == series.length - 1,
-                  label: weekday[dates[i].weekday],
+                child: Text(
+                  series.bucketDays == 1
+                      ? (isThai ? 'รายได้ต่อวัน' : 'Per day')
+                      : (isThai
+                          ? 'แท่งละ ${series.bucketDays} วัน (เริ่มวันที่ใต้แท่ง)'
+                          : '${series.bucketDays} days per bar, from the date below'),
+                  style: const TextStyle(
+                      fontSize: 11.5, color: PgTokens.colorTextMuted),
                 ),
               ),
+              // THE SCALE. Bar heights are relative to this one number; printing it is the
+              // difference between a chart and a decoration.
+              if (!series.isEmpty)
+                Text(
+                  isThai
+                      ? 'สูงสุด ${Money.format(maxVal)}'
+                      : 'Peak ${Money.format(maxVal)}',
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    fontFamily: 'IBMPlexMono',
+                    fontFeatures: [FontFeature.tabularFigures()],
+                    color: PgTokens.colorTextMuted,
+                  ),
+                ),
             ],
-          ],
-        ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 110,
+            child:
+                Row(crossAxisAlignment: CrossAxisAlignment.end, children: bars),
+          ),
+        ],
       ),
     );
   }
 }
 
 class _Bar extends StatelessWidget {
-  const _Bar(
-      {required this.fraction, required this.isToday, required this.label});
+  const _Bar({
+    required this.fraction,
+    required this.highlight,
+    required this.label,
+    required this.semanticsLabel,
+  });
 
+  /// 0.0 … 1.0 of the bar area; exactly 0.0 means "earned nothing", not "too small to see".
   final double fraction;
-  final bool isToday;
+
+  /// This bucket contains today AND earned something (design: today's bar is amber).
+  final bool highlight;
   final String label;
+  final String semanticsLabel;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
         Expanded(
-          child: Align(
-            alignment: Alignment.bottomCenter,
-            child: FractionallySizedBox(
-              heightFactor: fraction.clamp(0.0, 1.0),
-              child: Container(
-                decoration: BoxDecoration(
-                  color:
-                      isToday ? PgTokens.colorAmber400 : PgTokens.colorPrimary,
-                  borderRadius:
-                      const BorderRadius.vertical(top: Radius.circular(5)),
+          child: Semantics(
+            label: semanticsLabel,
+            child: Stack(
+              children: [
+                // The faint track keeps an empty bucket a visible column, so dropping the old
+                // min-height stub costs no legibility while making ฿0 honestly empty.
+                Positioned.fill(
+                  child: Container(
+                    decoration: const BoxDecoration(
+                      color: PgTokens.colorSunken,
+                      borderRadius:
+                          BorderRadius.vertical(top: Radius.circular(5)),
+                    ),
+                  ),
                 ),
-              ),
+                if (fraction > 0)
+                  Align(
+                    alignment: Alignment.bottomCenter,
+                    child: FractionallySizedBox(
+                      heightFactor: fraction.clamp(0.0, 1.0),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: highlight
+                              ? PgTokens.colorAmber400
+                              : PgTokens.colorPrimary,
+                          borderRadius: const BorderRadius.vertical(
+                              top: Radius.circular(5)),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
         ),
         const SizedBox(height: 6),
         Text(
           label,
+          maxLines: 1,
+          overflow: TextOverflow.clip,
           style: const TextStyle(fontSize: 10, color: PgTokens.colorTextFaint),
         ),
       ],
