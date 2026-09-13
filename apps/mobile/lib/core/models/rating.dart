@@ -88,7 +88,28 @@ class GuardRatings {
   /// Whether there's a real aggregate to show (never fake a 0.0).
   bool get hasRatings => count > 0 && averageValue != null;
 
-  /// Mean of a category's non-null values across the visible reviews. The contract aggregate
+  /// How many of the returned reviews scored AT LEAST ONE category — the set the per-category bars
+  /// are actually averaged over.
+  ///
+  /// It is NOT [count]. The headline average is the server's `AVG(overall_rating)` over EVERY
+  /// visible review; the bars are client-side means over the returned PAGE (`reviews`, max 100 per
+  /// `contracts/openapi/rating.yaml`), and only over reviews that filled the optional categories in.
+  /// The two are different quantities over different sets, so the screen labels the bars with this
+  /// number instead of letting them read as a breakdown of the big figure above them.
+  int get categorySampleSize => reviews
+      .where((r) =>
+          r.punctuality != null ||
+          r.professionalism != null ||
+          r.communication != null ||
+          r.appearance != null)
+      .length;
+
+  /// The aggregate counts more visible reviews than this page returned, so the bars are computed
+  /// from a subset of what the headline averages — the screen says so rather than implying they
+  /// describe the same reviews.
+  bool get isPartialSample => count > reviews.length;
+
+  /// Mean of a category's non-null values across the returned reviews. The contract aggregate
   /// carries no per-category average, so it's derived from the returned set; `null` when no
   /// returned review rated that category.
   double? categoryAverage(int? Function(Review) pick) {

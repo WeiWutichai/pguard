@@ -55,8 +55,9 @@ Future<void> pumpActiveJob(
         path: '/earnings',
         builder: (_, __) => const Scaffold(body: Text('EARNINGS')),
       ),
-      // _backToJobs resets the stack to the guard home then pushes /guard/jobs (so 'back' from the
-      // jobs list returns home instead of being frozen) — the home route must exist for go() to land.
+      // Both terminal CTAs reset the stack to the guard home (`_backToPool`); the non-terminal
+      // awaiting CTA resets to home then pushes /guard/jobs (`_backToMyJobs`, so 'back' from the
+      // jobs list returns home instead of being frozen). The home route must exist for go() to land.
       GoRoute(
         path: '/home/guard',
         builder: (_, __) => const Scaffold(body: Text('GUARD HOME')),
@@ -161,10 +162,13 @@ void main() {
     expect(find.text('ดูใบสรุปค่าบริการ'), findsNothing);
     expect(find.text('ดูรายได้ของฉัน'), findsOneWidget);
 
-    // Tapping "take new jobs" navigates to the jobs list (no dead-end).
+    // Tapping "take new jobs" navigates to the guard dashboard — the พร้อมรับงาน screen that
+    // carries the incoming-job pool (no dead-end, and NOT the My Jobs list: its default กำลังทำ tab
+    // cannot contain the job that just ended). See active_job_back_to_jobs_test for the full trip.
     await tester.tap(find.text('กลับไปรับงานใหม่'));
     await tester.pumpAndSettle();
-    expect(find.text('JOBS LIST'), findsOneWidget);
+    expect(find.text('GUARD HOME'), findsOneWidget);
+    expect(find.text('JOBS LIST'), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
   });

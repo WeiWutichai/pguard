@@ -16,6 +16,20 @@ import '../../widgets/star_rating.dart';
 /// Reads the guard's OWN id from the session and fetches `GET /v1/guards/{id}/ratings` once (no
 /// polling). Per-category averages aren't in the contract aggregate, so they're derived from the
 /// returned reviews; a category with no rated reviews is simply omitted (never a fake 0.0).
+///
+/// THE BARS ARE NOT A BREAKDOWN OF THE HEADLINE, and the screen has to say so. They are different
+/// quantities over different sets, in two independent ways:
+///  · the headline is `AVG(overall_rating)` over ALL visible reviews, and each `overall_rating` was
+///    already ROUNDED to a whole star by the customer's review form
+///    (`features/booking/review_screen.dart` submits the category mean rounded); the bars are the
+///    UNROUNDED per-category means. One 5/4/4/4 review prints a "4.0" headline over bars that
+///    plainly average 4.25.
+///  · the headline covers every visible review (`count`), the bars only the returned page
+///    (`reviews`, max 100 — `contracts/openapi/rating.yaml`), and only those that filled the
+///    optional categories in.
+/// So the bars carry a caption naming their own sample, and the headline's stars are drawn from the
+/// fractional average ([StarRatingAverage]) instead of `round()`ing 4.5 up to five full stars. The
+/// real fix is upstream — a decimal overall in the contract, or server-side per-category averages.
 class GuardRatingsScreen extends ConsumerWidget {
   const GuardRatingsScreen({super.key});
 
@@ -70,8 +84,7 @@ class _Empty extends StatelessWidget {
             const SizedBox(height: PgTokens.space3),
             Text(
               isThai ? 'ยังไม่มีรีวิว' : 'No reviews yet',
-              style:
-                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: PgTokens.space2),
             Text(
@@ -113,8 +126,7 @@ class _Content extends StatelessWidget {
       padding: const EdgeInsets.all(PgTokens.space4),
       children: [
         Text(isThai ? 'คะแนนของฉัน' : 'My rating',
-            style:
-                const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
         const SizedBox(height: PgTokens.space3),
         Center(
           child: Column(
@@ -128,7 +140,9 @@ class _Content extends StatelessWidget {
                   color: PgTokens.colorTextStrong,
                 ),
               ),
-              StarRatingDisplay(value: avg.round(), size: 16),
+              // The FRACTIONAL average, half-stars and all: `avg.round()` drew a 4.5 as five full
+              // stars, a second, smaller way this screen contradicted its own printed number.
+              StarRatingAverage(value: avg, size: 16),
               const SizedBox(height: 6),
               Text(
                 isThai
@@ -141,9 +155,45 @@ class _Content extends StatelessWidget {
           ),
         ),
         const SizedBox(height: PgTokens.space4),
+        // Name the bars and the sample they are averaged over, so they stop reading as the
+        // headline's own arithmetic. Only shown when there IS a bar (a review set where nobody
+        // scored a category renders none).
+        if (ratings.categorySampleSize > 0) ...[
+          Text(
+            isThai
+                ? 'เฉลี่ยรายหมวด · จาก ${ratings.categorySampleSize} รีวิวที่ให้คะแนนรายหมวด'
+                : 'Per-category average · from ${ratings.categorySampleSize} reviews that scored categories',
+            style:
+                const TextStyle(fontSize: 11.5, color: PgTokens.colorTextMuted),
+          ),
+          const SizedBox(height: PgTokens.space2),
+        ],
         for (final c in categories)
           if (ratings.categoryAverage(c.pick) case final v?)
             _CategoryBar(label: isThai ? c.th : c.en, value: v),
+        // The aggregate above counts reviews this page did not return, so the bars are a subset of
+        // what the big number averages — same caveat shape as the earnings hero's "ยอดอาจไม่ครบ".
+        if (ratings.isPartialSample) ...[
+          const SizedBox(height: PgTokens.space2),
+          Row(
+            children: [
+              const Icon(Icons.info_outline,
+                  size: 13, color: PgTokens.colorWarning),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(
+                  isThai
+                      ? 'แสดงรีวิวล่าสุด ${ratings.reviews.length} จาก ${ratings.count} · แถบอาจไม่ครบ'
+                      : 'Showing the latest ${ratings.reviews.length} of ${ratings.count} · bars may be incomplete',
+                  style: const TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      color: PgTokens.colorWarning),
+                ),
+              ),
+            ],
+          ),
+        ],
         const SizedBox(height: PgTokens.space3),
         for (final review in ratings.reviews)
           _ReviewItem(review: review, isThai: isThai),
@@ -168,8 +218,8 @@ class _CategoryBar extends StatelessWidget {
           SizedBox(
             width: 90, // design `.catbar2 .l { width:90px }`
             child: Text(label,
-                style: const TextStyle(
-                    fontSize: 12.5, color: PgTokens.colorText)),
+                style:
+                    const TextStyle(fontSize: 12.5, color: PgTokens.colorText)),
           ),
           const SizedBox(width: 10), // design `.catbar2 { gap:10px }`
           Expanded(

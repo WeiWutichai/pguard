@@ -189,7 +189,15 @@ GoRouter appRouter(AppRouterRef ref) {
         ),
       ),
       // Guard's full tabbed jobs list (Pending / Active / Done) — the bottom-nav "งาน" tab.
-      GoRoute(path: '/guard/jobs', builder: (_, __) => const GuardJobsScreen()),
+      // `?tab=pending|active|done` picks the landing tab (default Active) so a caller can say WHICH
+      // list it means — the nav badge counts รอตอบรับ jobs and must not drop the guard on กำลังทำ.
+      GoRoute(
+        path: '/guard/jobs',
+        builder: (_, state) => GuardJobsScreen(
+          initialTab:
+              GuardJobsScreen.tabFromQuery(state.uri.queryParameters['tab']),
+        ),
+      ),
       // Guard's work history (Completed / Cancelled) — from the profile menu.
       GoRoute(
           path: '/guard/history',
@@ -296,7 +304,7 @@ String _homeFor(AuthUser? user) =>
 
 /// NOTE — KEEP THIS SYNCHRONOUS. Several navigations build a poppable stack with a synchronous
 /// `context.go('/home/...')` immediately followed by `context.push(<leaf>)` (guard_discovery,
-/// payment, promptpay_slip, job_detail, and active_job `_backToJobs`). That pattern only yields the
+/// payment, promptpay_slip, job_detail, and active_job `_backToMyJobs`). That pattern only yields the
 /// intended `[home, leaf]` stack because `go()` applies to `currentConfiguration` synchronously —
 /// which holds ONLY while this redirect returns a plain `String?` (making the route parse a
 /// `SynchronousFuture`). If this is ever made `async`, `go()` defers, the following `push()` builds

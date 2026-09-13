@@ -14,6 +14,7 @@ Map<String, dynamic> jobJson(
   int hours = 8,
   int guards = 2,
   String? commissionPercent,
+  String scheduledAt = '2026-06-03T12:00:00Z',
 }) =>
     {
       'id': id,
@@ -22,7 +23,7 @@ Map<String, dynamic> jobJson(
       'status': status,
       'address': address,
       // Noon UTC keeps the local calendar date stable across test-machine timezones.
-      'scheduled_at': '2026-06-03T12:00:00Z',
+      'scheduled_at': scheduledAt,
       'hours': hours,
       'guard_count': guards,
       'base_fee': baseFee,
@@ -188,6 +189,80 @@ void main() {
     expect(find.textContaining('ยังไม่มีรายได้'), findsOneWidget);
     // The hero still renders the honest ฿0 total.
     expect(find.text('฿0'), findsOneWidget);
+  });
+
+  // The reported bug ("กราฟข้อมูลยังไม่ตรง"): the chart was hard-wired to 7 days with weekday labels
+  // while the hero followed the Day/Week/Month tab, so on เดือน a 30-day hero sat above a 7-day
+  // chart and on วัน a ฿0 hero sat above bars showing money. The chart must now follow the tab.
+  group('the chart follows the selected tab', () {
+    // "now" is Thursday 2026-06-04; the seven daily bars therefore end on พฤ.
+    // One job yesterday (in every window) and one 20 days back (only in เดือน) — under the old
+    // 7-day chart the เดือน bars could not show the second job the hero was counting.
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings'
+          ? [
+              jobJson('recent', 'completed'), // 2026-06-03 → ฿1,840
+              jobJson('old', 'completed',
+                  address: 'คอนโด ไอดีโอ',
+                  scheduledAt: '2026-05-15T12:00:00Z'), // 20 days back → ฿1,840
+            ]
+          : const <Map<String, dynamic>>[],
+    );
+
+    testWidgets('สัปดาห์ — 7 daily bars, weekday labels, and the scale printed',
+        (tester) async {
+      await pumpScreen(tester, api);
+
+      expect(find.text('รายได้ต่อวัน'), findsOneWidget);
+      // Today's bar (Thursday) plus the six before it.
+      for (final d in ['ศ', 'ส', 'อา', 'จ', 'อ', 'พ', 'พฤ']) {
+        expect(find.text(d), findsOneWidget, reason: 'missing the $d bar');
+      }
+      // Bar heights normalise to the busiest bar, so that number has to be ON the chart —
+      // without it a ฿1 day and a ฿10,000 day draw identically.
+      expect(find.text('สูงสุด ฿1,840'), findsOneWidget);
+      // The 20-day-old job is outside the week: hero and bars agree on ฿1,840 alone.
+      expect(find.text('฿1,840'), findsNWidgets(2)); // hero + its single row
+    });
+
+    testWidgets('เดือน — 5 six-day blocks labelled by date, no weekday axis',
+        (tester) async {
+      await pumpScreen(tester, api);
+      await tester.tap(find.text('เดือน'));
+      await tester.pump();
+
+      // The hero now counts BOTH jobs…
+      expect(find.text('รายได้เดือนนี้'), findsOneWidget);
+      expect(find.text('฿3,680'), findsOneWidget);
+      // …and the chart is a 30-day decomposition, not the old 7-day one.
+      expect(find.text('แท่งละ 6 วัน (เริ่มวันที่ใต้แท่ง)'), findsOneWidget);
+      for (final d in ['6 พ.ค.', '12 พ.ค.', '18 พ.ค.', '24 พ.ค.', '30 พ.ค.']) {
+        expect(find.text(d), findsOneWidget, reason: 'missing the $d block');
+      }
+      // The weekday axis belonged to the 7-day chart and must be gone with it.
+      for (final d in ['ศ', 'ส', 'อา', 'จ', 'อ', 'พ', 'พฤ']) {
+        expect(find.text(d), findsNothing,
+            reason: 'weekday label "$d" is the 7-day chart leaking into เดือน');
+      }
+      // Both jobs are in the window, one per block → the busiest block is one job.
+      expect(find.text('สูงสุด ฿1,840'), findsOneWidget);
+      expect(find.text('คอนโด ไอดีโอ'), findsOneWidget);
+    });
+
+    testWidgets('วัน — no chart at all; the rows ARE the breakdown',
+        (tester) async {
+      await pumpScreen(tester, api);
+      await tester.tap(find.text('วัน'));
+      await tester.pump();
+
+      // Nothing completed today: the honest ฿0 hero, and no bars to contradict it.
+      expect(find.text('รายได้วันนี้'), findsOneWidget);
+      expect(find.text('฿0'), findsOneWidget);
+      expect(find.textContaining('สูงสุด'), findsNothing);
+      expect(find.text('รายได้ต่อวัน'), findsNothing);
+      expect(find.textContaining('แท่งละ'), findsNothing);
+      expect(find.text('ยังไม่มีงานที่เสร็จในช่วงนี้'), findsOneWidget);
+    });
   });
 
   testWidgets('shows PgErrorState on load failure', (tester) async {

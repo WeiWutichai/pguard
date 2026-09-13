@@ -139,7 +139,12 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen>
             icon: Icons.inbox_outlined,
             label: isThai ? 'งาน' : 'Jobs',
             badgeCount: incomingCount,
-            onTap: () => context.push('/guard/jobs'),
+            // The badge counts INCOMING (รอตอบรับ) offers, so when it is lit the tap must open that
+            // tab — landing on My Jobs' default "กำลังทำ" tab showed an empty list while the very
+            // jobs the badge was advertising sat one tab over (same complaint as the completed-job
+            // CTA). With no offers pending there is nothing to show there, so keep the default.
+            onTap: () => context.push(
+                incomingCount > 0 ? '/guard/jobs?tab=pending' : '/guard/jobs'),
           ),
           PgNavTab(
             icon: Icons.payments_outlined,
