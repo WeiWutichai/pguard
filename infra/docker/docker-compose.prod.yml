@@ -267,7 +267,7 @@ services:
       start_period: 5s
 
   minio:
-    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    image: quay.io/minio/minio:RELEASE.2024-10-13T13-34-11Z
     container_name: pguard-prod-minio
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
